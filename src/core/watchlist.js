@@ -3,6 +3,7 @@
  * Uses TradingView's internal widget API with DOM fallback.
  */
 import { evaluate, evaluateAsync, getClient } from '../connection.js';
+import { openPanel } from './ui.js';
 
 export async function get() {
   // Try internal API first — reads from the active watchlist widget
@@ -66,22 +67,10 @@ export async function add({ symbol }) {
   // Use keyboard shortcut to open symbol search in watchlist, type symbol, press Enter
   const c = await getClient();
 
-  // First ensure watchlist panel is open
-  const panelState = await evaluate(`
-    (function() {
-      var btn = document.querySelector('[data-name="base-watchlist-widget-button"]')
-        || document.querySelector('[aria-label*="Watchlist"]');
-      if (!btn) return { error: 'Watchlist button not found' };
-      var isActive = btn.getAttribute('aria-pressed') === 'true'
-        || btn.classList.toString().indexOf('Active') !== -1
-        || btn.classList.toString().indexOf('active') !== -1;
-      if (!isActive) { btn.click(); return { opened: true }; }
-      return { opened: false };
-    })()
-  `);
-
-  if (panelState?.error) throw new Error(panelState.error);
-  if (panelState?.opened) await new Promise(r => setTimeout(r, 500));
+  const opened = await openPanel({ panel: 'watchlist', action: 'open' });
+  if (!opened?.success) {
+    throw new Error(opened?.error || 'Failed to open watchlist panel');
+  }
 
   // Click the "Add symbol" button (various selectors)
   const addClicked = await evaluate(`

@@ -31,6 +31,7 @@ export async function list() {
  * Open a new chart tab via keyboard shortcut (Ctrl+T / Cmd+T).
  */
 export async function newTab() {
+  const before = await list();
   const c = await getClient();
 
   // Electron/TradingView Desktop uses Ctrl+T for new tab on macOS too
@@ -49,9 +50,19 @@ export async function newTab() {
 
   await new Promise(r => setTimeout(r, 2000));
 
-  // Verify a new tab appeared
-  const state = await list();
-  return { success: true, action: 'new_tab_opened', ...state };
+  const after = await list();
+  if (after.tab_count <= before.tab_count) {
+    return {
+      success: false,
+      action: 'new_tab_opened',
+      error: `New tab did not appear (tabs_before=${before.tab_count}, tabs_after=${after.tab_count}). CDP keyboard event may not be reaching the tab strip on this TradingView version.`,
+      tabs_before: before.tab_count,
+      tabs_after: after.tab_count,
+      tab_count: after.tab_count,
+      tabs: after.tabs,
+    };
+  }
+  return { success: true, action: 'new_tab_opened', tabs_before: before.tab_count, ...after };
 }
 
 /**
@@ -79,7 +90,14 @@ export async function closeTab() {
   await new Promise(r => setTimeout(r, 1000));
 
   const after = await list();
-  return { success: true, action: 'tab_closed', tabs_before: before.tab_count, tabs_after: after.tab_count };
+  const closed = after.tab_count < before.tab_count;
+  return {
+    success: closed,
+    action: 'tab_closed',
+    tabs_before: before.tab_count,
+    tabs_after: after.tab_count,
+    ...(closed ? {} : { error: 'Tab count did not decrease; close keystroke may not have reached the renderer.' }),
+  };
 }
 
 /**
