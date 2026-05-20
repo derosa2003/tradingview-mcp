@@ -34,6 +34,17 @@ Pinned commit 4795784a19dd64ff4e2649d2499a536b01bd2d68.
 - Downstream impact: `tab_switch` and `tab_close` could not be
   exercised against a fresh tab (closing the only tab would have
   destroyed the user's chart session). Both SKIPPED in this round.
+- Why this matters: silent success is worse than honest failure. A
+  caller that chains `tab_new` → `tab_close` to discard a throwaway
+  tab will instead close the user's only real tab. The response
+  already includes a re-queried `tab_count`, so the server has the
+  information needed to detect this — it just doesn't assert on it.
+- Suggested direction (not pursued — pin held): capture `tab_count`
+  before the action, re-query after, and only return `success: true`
+  if it increased. The broader concern this raises is whether other
+  state-mutating tools have the same "return success without
+  verifying the side-effect landed" pattern — worth a Phase 2 audit
+  pass across the surface.
 
 ## `watchlist_add` — fails when the watchlist panel is closed
 
