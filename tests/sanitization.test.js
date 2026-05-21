@@ -199,8 +199,15 @@ describe('chart.js — sanitized evaluate calls', () => {
 
   it('manageIndicator remove uses safeString for entity_id', async () => {
     const { _deps, evaluate } = mockDeps();
+    // Mock the find call to return found=true so the remove path actually fires removeEntity.
+    _deps.evaluate = async (expr) => {
+      evaluate.calls.push(expr);
+      if (expr.includes('getStudyById')) return { found: true, pane_index: 0 };
+      return undefined;
+    };
     await manageIndicator({ action: 'remove', entity_id: "abc123", _deps });
     const call = evaluate.calls.find(c => c.includes('removeEntity'));
+    assert.ok(call, 'removeEntity was called');
     assert.ok(call.includes('"abc123"'), 'entity_id via safeString');
   });
 

@@ -205,7 +205,7 @@ export async function manageIndicator({ action, indicator, entity_id, inputs: in
     if (!entity_id) throw new Error('entity_id required for remove action. Use chart_get_state to find study IDs.');
 
     // Idempotent: if the study isn't in any pane, return success with already_removed=true.
-    const findResult = await evaluate(`
+    const findResult = (await evaluate(`
       (function(){
         ${pane_index === undefined || pane_index === null
           ? `var n = window.TradingViewApi.chartsCount();
@@ -217,7 +217,7 @@ export async function manageIndicator({ action, indicator, entity_id, inputs: in
              try { s = ${expr}.getStudyById(${safeString(entity_id)}); } catch(e) {}
              return s ? { found: true, pane_index: ${Number(pane_index)} } : { found: false };`}
       })()
-    `);
+    `)) || { found: false };
 
     if (!findResult.found) {
       return { success: true, action: 'remove', entity_id, already_removed: true, pane_index: pane_index ?? null };
@@ -263,7 +263,7 @@ export async function waitReady({ pane_index, timeout_ms = 8000, _deps } = {}) {
   const start = Date.now();
   let lastSym = null, lastRes = null;
   while (Date.now() - start < timeout_ms) {
-    const state = await evaluate(`
+    const raw = await evaluate(`
       (function(){
         var c = ${expr};
         var ready = false;
@@ -273,8 +273,13 @@ export async function waitReady({ pane_index, timeout_ms = 8000, _deps } = {}) {
         return { ready: !!ready, symbol: sym, resolution: res };
       })()
     `);
-    lastSym = state.symbol; lastRes = state.resolution;
-    if (state.ready) {
+    // If evaluate isn't returning anything (mock context or chart API not yet up),
+    // don't spin the full timeout — bail with ready:false so callers can proceed.
+    if (raw === undefined || raw === null) {
+      return { success: false, ready: false, pane_index: pane_index ?? null, symbol: null, resolution: null, waited_ms: Date.now() - start, note: 'evaluate returned no value' };
+    }
+    lastSym = raw.symbol; lastRes = raw.resolution;
+    if (raw.ready) {
       return { success: true, ready: true, pane_index: pane_index ?? null, symbol: lastSym, resolution: lastRes, waited_ms: Date.now() - start };
     }
     await new Promise(r => setTimeout(r, 100));
