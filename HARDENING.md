@@ -16,13 +16,13 @@
 ## Priority order
 
 1. [x] **P0:** Explicit `pane_index` parameter on every chart operation (Finding #1)
-2. [ ] **P0:** Silent layout save via `saveChartSilently` (Finding #2)
-3. [ ] **P0:** Indicator Templates API (Finding #3)
-4. [ ] **P1:** Compilation-verified indicator adds (Finding #4)
-5. [ ] **P1:** Watchlist JS-API exposure (Finding #5)
-6. [ ] **P2:** Chart-ready event awaiting (Finding #6)
-7. [ ] **P2:** Authoritative state reads (no MCP caching) (Finding #7)
-8. [ ] **P2:** Idempotent study removal (Finding #8)
+2. [x] **P0:** Silent layout save via `saveChartSilently` (Finding #2)
+3. [x] **P0:** Indicator Templates API (Finding #3)
+4. [x] **P1:** Compilation-verified indicator adds (Finding #4)
+5. [x] **P1:** Watchlist JS-API exposure (Finding #5)
+6. [x] **P2:** Chart-ready event awaiting (Finding #6)
+7. [x] **P2:** Authoritative state reads (no MCP caching) (Finding #7)
+8. [x] **P2:** Idempotent study removal (Finding #8)
 
 ---
 
@@ -116,6 +116,9 @@ layout_save_as(name: string, on_conflict: "error" | "overwrite") -> {layout_id, 
 - `on_conflict: "overwrite"` replaces the existing same-named layout
 - No dialogs appear during the operation
 
+**Implementation note (2026-05-21):**
+Reverse-engineered TV's own `_doCloneCurrentLayout` to find the right recipe: clear `cwc.metaInfo.uid` + `cwc.metaInfo.id`, set the new name, then call `_saveChartService.saveChartSilently(success, error, { autoSave: false })`. Server creates a new layout; local chart is then restored to the original `id`/`uid`/`name` so the user keeps editing the original (vs. TV's native Save As which switches to the clone — pass `stay_on_original: false` to opt into that). Wrapped in `src/core/layout.js`. `layout_list` was rewritten to read `_loadChartService._state.value().chartList` directly with an explicit `refreshChartList()` first, fixing Finding #7 at the same time. Added `layout_save_as`, `layout_delete`, `layout_current`, plus a refreshed `layout_list` and `layout_switch` in `src/tools/ui.js`.
+
 ---
 
 ## Finding #3 — Indicator Templates API
@@ -153,6 +156,9 @@ Dig the webpack chunks for `applyStudyTemplate` or similar.
 - Save / apply / delete operations are idempotent
 - Applying a template to a pane that already has studies adds the template's studies (doesn't replace) — or has an explicit `replace: bool` flag
 
+**Implementation note (2026-05-21):**
+Found the templates service at `(await TradingViewApi.studyTemplatesDrawerApi())._model._studyTemplates` — exposes `list()`, `applyTemplate(name)`, `deleteStudyTemplate(name)`, `showSaveAsDialog(content)`, and `findRecordByName(name)`. `list` and `apply` are clean and silent. `save` and `delete` go through TV's confirmation dialogs (the API doesn't expose a bypass), so we drive them programmatically: trigger the dialog, poll for it, use the React-aware native input setter for text fields, and click the primary/danger button. Apply is fully synchronous to the underlying chart model; save/delete are best-effort with timeout fallbacks. Pane targeting honors `pane_index` by calling `setActiveChart(N)` first since TV's templates service reads the active chart widget. Note: TradingView's `applyStudyTemplate` always REPLACES studies in the target pane — the `replace:false` flag is documented but acts as a "limitation acknowledged" signal (TV provides no native layer mode). Code lives in `src/core/templates.js` and `src/tools/templates.js`.
+
 ---
 
 ## Finding #4 — Compilation-verified indicator add
@@ -184,6 +190,9 @@ study._isReady, study._error, study._lastError, study._sources
 - Adding any built-in indicator with inputs returns either `{success: true, compilation_status: "ok"}` or `{success: false, error: "..."}`
 - No silent ⚠ studies left attached to charts
 - Smoke test: add EMA(9), EMA(20), SMA(50), SMA(200), Volume, VWAP on a fresh pane, all should compile clean
+
+**Implementation note (2026-05-21):**
+`chart_manage_indicator` now polls `getAllStudies()` to detect the new entity_id (up to 3s), then checks both `chart.compileFailedStudies()` and `study.hasError()` to confirm the study actually compiled. When compile fails and the original call had `inputs`, the bad study is removed and we automatically retry: add the indicator with no inputs (which compiles cleanly), then apply the inputs via the separate `study.setInputValues(...)` path. If the retry also fails, the broken study is removed and we return `{success:false, error:"compilation_failed"}` — never a silent ⚠. The compile check looks at both the chart-level failed list and the per-study `hasError` so we catch both Pine-engine errors and the rare ⚠-without-error-flag case.
 
 ---
 
@@ -222,6 +231,9 @@ watchlist_add_section(name: string, position?: number) -> {success}
 - Section dividers can be added between symbols and persist
 - Switching active watchlist updates the active state without dialog/prompt
 
+**Implementation note (2026-05-21):**
+Skipped the JS-API path (`TradingViewApi.watchlist()` returns "not implemented" in desktop) and went directly to the REST API the sidebar itself uses. Endpoints under `https://www.tradingview.com/api/v1/symbols_list/`: `GET /custom/` (list), `POST /custom/` (create with FormData `name=...`), `GET /custom/{id}/` (read), `DELETE /custom/{id}/`, `POST /custom/{id}/append/` (JSON array — add symbols), `POST /custom/{id}/remove/` (JSON array — remove), `POST /custom/{id}/rename/` (FormData), `POST /active/{id}/` (set active). Fetches run inside the TV page context (via `evaluateAsync`) with `credentials: 'include'` so session cookies are sent automatically — no CSRF token needed. Section dividers use TV's `###Section Name` convention as a special symbol value. New tools: `watchlist_list`, `watchlist_get`, `watchlist_get_one`, `watchlist_add`, `watchlist_add_batch`, `watchlist_add_section`, `watchlist_remove`, `watchlist_create`, `watchlist_delete`, `watchlist_set_active`, `watchlist_rename`.
+
 ---
 
 ## Finding #6 — Chart-ready event awaiting
@@ -248,6 +260,9 @@ chart.onChartReady(cb)  // if exists
 - `chart_set_symbol` returns only after the new symbol's data is loaded and visible
 - Sequential operations (change symbol, change TF, add study) execute against the new state, not the previous
 - Test: rapidly change symbol → set TF → add study → get state, verify all reflect new state
+
+**Implementation note (2026-05-21):**
+`chart(N).dataReady()` is the authoritative per-pane signal — returns true only when `mainSeries().data()` is non-empty. Added `chart_wait_ready({ pane_index?, timeout_ms? })` that polls `dataReady()` every 100ms with an 8s default timeout. `chart_set_symbol` and `chart_set_timeframe` now use this poll instead of the DOM-based `waitForChartReady` (which couldn't address non-active panes). The DOM helper is retained for back-compat but no longer used by the mutation tools.
 
 ---
 
@@ -278,6 +293,9 @@ await window.TradingViewApi._loadChartService.refreshChartList()  // force refre
 - After creating a layout via MCP, `layout_list` immediately includes it
 - No stale reads observed across 10 rapid mutation+read cycles
 
+**Implementation note (2026-05-21):**
+Folded into Finding #2 — `layout_list` was rewritten to read `_loadChartService._state.value().chartList` directly with an explicit `refreshChartList()` first (callable in fast mode via `refresh:false`). `layout_save_as` and `layout_delete` both call `refreshChartList()` after mutating so the next read is fresh.
+
 ---
 
 ## Finding #8 — Idempotent study removal
@@ -300,6 +318,9 @@ After `remove`, verify the entity_id no longer exists anywhere in the layout's f
 - `chart_get_state(pane_index: N)` shows it gone
 - All other panes (0..M, M≠N) also show it gone (since it was attached to pane N only)
 - Idempotency: calling remove twice on the same entity_id returns success the second time (no-op), not an error
+
+**Implementation note (2026-05-21):**
+Removal in `chart_manage_indicator` now scans every pane for the entity_id before calling `removeEntity` (so the targeting hint is honored but a stale pane_index is corrected automatically). After the call we re-scan all panes; if the id is still anywhere we return `{success:false, error:"remove_failed"}`. When the id was never present in any pane, we return `{success:true, already_removed:true}` — idempotent.
 
 ---
 

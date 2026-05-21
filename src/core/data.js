@@ -117,7 +117,7 @@ export async function getIndicator({ entity_id, pane_index }) {
         }
         return null;
       })()`
-    : `${chartApiExpr(pane_index)}.getStudyById(${lookupId})`;
+    : `(function(){ try { return ${chartApiExpr(pane_index)}.getStudyById(${lookupId}); } catch(e) { return null; } })()`;
 
   const data = await evaluate(`
     (function() {

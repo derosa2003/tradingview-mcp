@@ -68,6 +68,14 @@ export function registerChartTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
+  server.tool('chart_wait_ready', 'Block until the chart\'s data has finished loading (dataReady() === true) after a symbol or resolution change. Use this when sequential operations need to see fresh state.', {
+    pane_index: paneIndexSchema,
+    timeout_ms: z.coerce.number().optional().describe('Max time to wait (default 8000ms)'),
+  }, async ({ pane_index, timeout_ms }) => {
+    try { return jsonResult(await core.waitReady({ pane_index, timeout_ms })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
   server.tool('symbol_info', 'Get detailed metadata about the current symbol (name, exchange, type, description)', {}, async () => {
     try { return jsonResult(await core.symbolInfo()); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }

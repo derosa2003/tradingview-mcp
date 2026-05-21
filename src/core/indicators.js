@@ -23,7 +23,8 @@ function studyLookupExpr(entity_id, pane_index) {
     })()`;
   }
   return `(function(){
-    var s = ${chartApiExpr(pane_index)}.getStudyById(${id});
+    var s = null;
+    try { s = ${chartApiExpr(pane_index)}.getStudyById(${id}); } catch(e) {}
     return s ? { study: s, pane_index: ${Number(pane_index)} } : null;
   })()`;
 }

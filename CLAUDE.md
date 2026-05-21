@@ -120,6 +120,45 @@ These tools can return large payloads. Follow these rules to avoid context bloat
 - OHLCV capped at 500 bars, trades at 20 per request
 - Pine labels capped at 50 per study by default (pass `max_labels` to override)
 
+### Saved layouts (cloud-side, no dialogs)
+
+Saved chart layouts are persisted server-side per TradingView account. The MCP talks to them directly via internal services — never via the "Make a copy" dialog.
+
+- `layout_list` → fresh list of saved layouts (always re-reads from the server; pass `refresh:false` for a faster cached read)
+- `layout_current` → id + name of the currently-loaded layout
+- `layout_switch(name)` → load a saved layout by name or id
+- `layout_save_as(name, on_conflict?, stay_on_original?)` → create a NEW saved layout from the current chart. Default `stay_on_original:true` keeps the user on the original layout (the new copy lives only on the server). Set `stay_on_original:false` to switch to the clone (TradingView's native "Save As" behavior). `on_conflict:"error"` (default) rejects duplicates; `on_conflict:"overwrite"` deletes the existing same-named layout first.
+- `layout_delete(name_or_id)` → delete a saved layout
+
+### Watchlists (REST data layer)
+
+Talks to the same REST endpoints as the watchlist sidebar — works whether the sidebar is open, closed, resized, or hidden. Section dividers use the `###Section Name` convention.
+
+- `watchlist_list` → all custom watchlists with counts
+- `watchlist_get` → active watchlist contents
+- `watchlist_get_one(name_or_id)` → specific watchlist contents
+- `watchlist_create(name, symbols?)` → new watchlist, optionally pre-populated
+- `watchlist_delete(name_or_id)` → delete a watchlist
+- `watchlist_set_active(name_or_id)` → mark a watchlist as active
+- `watchlist_rename(name_or_id, new_name)` → rename
+- `watchlist_add(symbol, watchlist?)` → append one symbol (defaults to active)
+- `watchlist_add_batch(symbols, watchlist?)` → append many at once. Use `###Section Name` entries for dividers
+- `watchlist_add_section(name, watchlist?)` → insert a divider
+- `watchlist_remove(symbols, watchlist?)` → remove one or more symbols
+
+### Indicator templates
+
+Save / list / apply / delete TradingView's named indicator templates (sets of studies + inputs).
+
+- `indicator_template_list` → list all templates with name + study count
+- `indicator_template_apply(name, pane_index?)` → silent apply to a pane (no dialog). Note: TradingView's `applyStudyTemplate` REPLACES studies in the target pane — there is no native "layer" mode
+- `indicator_template_save(name, pane_index?, on_conflict?)` → save current pane's studies as a new template. Drives TV's save dialog programmatically — generally reliable but slightly more fragile than apply
+- `indicator_template_delete(name)` → delete by name (drives TV's confirm dialog). Idempotent
+
+### Chart readiness
+
+- `chart_wait_ready(pane_index?, timeout_ms?)` → block until `chart(N).dataReady() === true` (data finished loading after a symbol or resolution change). `chart_set_symbol` / `chart_set_timeframe` already call this internally, so call it explicitly only when chaining your own operations that aren't already covered.
+
 ### Targeting a specific pane in multi-chart layouts
 
 Every chart-pane tool accepts an optional `pane_index` (0-based, from `pane_list`). Pass it to target a pane directly via `TradingViewApi.chart(N)`, which does not depend on UI focus and never lands operations on the wrong pane. Omit `pane_index` for the currently active pane (legacy behavior).
