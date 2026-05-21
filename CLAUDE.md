@@ -120,6 +120,16 @@ These tools can return large payloads. Follow these rules to avoid context bloat
 - OHLCV capped at 500 bars, trades at 20 per request
 - Pine labels capped at 50 per study by default (pass `max_labels` to override)
 
+### Targeting a specific pane in multi-chart layouts
+
+Every chart-pane tool accepts an optional `pane_index` (0-based, from `pane_list`). Pass it to target a pane directly via `TradingViewApi.chart(N)`, which does not depend on UI focus and never lands operations on the wrong pane. Omit `pane_index` for the currently active pane (legacy behavior).
+
+Tools that accept `pane_index`:
+- `chart_get_state`, `chart_set_symbol`, `chart_set_timeframe`, `chart_set_type`, `chart_manage_indicator`
+- `indicator_set_inputs`, `indicator_toggle_visibility` (also auto-search every pane when `pane_index` is omitted)
+- `data_get_ohlcv`, `data_get_indicator`, `data_get_study_values`, `quote_get`
+- `data_get_pine_lines`, `data_get_pine_labels`, `data_get_pine_tables`, `data_get_pine_boxes`
+
 ## Architecture
 
 ```

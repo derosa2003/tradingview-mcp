@@ -1,17 +1,17 @@
 /**
  * Core data access logic.
  */
-import { evaluate, evaluateAsync, KNOWN_PATHS, safeString } from '../connection.js';
+import { evaluate, evaluateAsync, KNOWN_PATHS, safeString, chartApiExpr, barsExpr, chartWidgetExpr } from '../connection.js';
 
 const MAX_OHLCV_BARS = 500;
 const MAX_TRADES = 20;
 const CHART_API = KNOWN_PATHS.chartApi;
 const BARS_PATH = KNOWN_PATHS.mainSeriesBars;
 
-function buildGraphicsJS(collectionName, mapKey, filter) {
+function buildGraphicsJS(collectionName, mapKey, filter, pane_index) {
   return `
     (function() {
-      var chart = window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;
+      var chart = ${chartWidgetExpr(pane_index)};
       var model = chart.model();
       var sources = model.model().dataSources();
       var results = [];
@@ -59,13 +59,14 @@ function buildGraphicsJS(collectionName, mapKey, filter) {
   `;
 }
 
-export async function getOhlcv({ count, summary } = {}) {
+export async function getOhlcv({ count, summary, pane_index } = {}) {
   const limit = Math.min(count || 100, MAX_OHLCV_BARS);
+  const bp = barsExpr(pane_index);
   let data;
   try {
     data = await evaluate(`
       (function() {
-        var bars = ${BARS_PATH};
+        var bars = ${bp};
         if (!bars || typeof bars.lastIndex !== 'function') return null;
         var result = [];
         var end = bars.lastIndex();
@@ -106,12 +107,22 @@ export async function getOhlcv({ count, summary } = {}) {
   return { success: true, bar_count: data.bars.length, total_available: data.total_bars, source: data.source, bars: data.bars };
 }
 
-export async function getIndicator({ entity_id }) {
+export async function getIndicator({ entity_id, pane_index }) {
+  const lookupId = safeString(entity_id);
+  const lookup = (pane_index === undefined || pane_index === null)
+    ? `(function(){
+        var n = window.TradingViewApi.chartsCount();
+        for (var i = 0; i < n; i++) {
+          try { var s = window.TradingViewApi.chart(i).getStudyById(${lookupId}); if (s) return s; } catch(e) {}
+        }
+        return null;
+      })()`
+    : `${chartApiExpr(pane_index)}.getStudyById(${lookupId})`;
+
   const data = await evaluate(`
     (function() {
-      var api = ${CHART_API};
-      var study = api.getStudyById(${safeString(entity_id)});
-      if (!study) return { error: 'Study not found: ' + ${safeString(entity_id)} };
+      var study = ${lookup};
+      if (!study) return { error: 'Study not found: ' + ${lookupId} };
       var result = { name: null, inputs: null, visible: null };
       try { result.visible = study.isVisible(); } catch(e) {}
       try { result.inputs = study.getInputValues(); } catch(e) { result.inputs_error = e.message; }
@@ -242,16 +253,18 @@ export async function getEquity() {
   return { success: true, data_points: equity?.data?.length || 0, source: equity?.source, data: equity?.data || [], equity_summary: equity?.equity_summary, note: equity?.note, error: equity?.error };
 }
 
-export async function getQuote({ symbol } = {}) {
+export async function getQuote({ symbol, pane_index } = {}) {
+  const apiExpr = chartApiExpr(pane_index);
+  const bp = barsExpr(pane_index);
   const data = await evaluate(`
     (function() {
-      var api = ${CHART_API};
+      var api = ${apiExpr};
       var sym = ${safeString(symbol || '')};
       if (!sym) { try { sym = api.symbol(); } catch(e) {} }
       if (!sym) { try { sym = api.symbolExt().symbol; } catch(e) {} }
       var ext = {};
       try { ext = api.symbolExt() || {}; } catch(e) {}
-      var bars = ${BARS_PATH};
+      var bars = ${bp};
       var quote = { symbol: sym };
       if (bars && typeof bars.lastIndex === 'function') {
         var last = bars.valueAt(bars.lastIndex());
@@ -321,10 +334,10 @@ export async function getDepth() {
   return { success: true, bid_levels: data.bids?.length || 0, ask_levels: data.asks?.length || 0, spread: data.spread, bids: data.bids || [], asks: data.asks || [], raw_values: data.raw_values, note: data.note };
 }
 
-export async function getStudyValues() {
+export async function getStudyValues({ pane_index } = {}) {
   const data = await evaluate(`
     (function() {
-      var chart = window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;
+      var chart = ${chartWidgetExpr(pane_index)};
       var model = chart.model();
       var sources = model.model().dataSources();
       var results = [];
@@ -357,9 +370,9 @@ export async function getStudyValues() {
   return { success: true, study_count: data?.length || 0, studies: data || [] };
 }
 
-export async function getPineLines({ study_filter, verbose } = {}) {
+export async function getPineLines({ study_filter, verbose, pane_index } = {}) {
   const filter = study_filter || '';
-  const raw = await evaluate(buildGraphicsJS('dwglines', 'lines', filter));
+  const raw = await evaluate(buildGraphicsJS('dwglines', 'lines', filter, pane_index));
   if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
 
   const studies = raw.map(s => {
@@ -381,9 +394,9 @@ export async function getPineLines({ study_filter, verbose } = {}) {
   return { success: true, study_count: studies.length, studies };
 }
 
-export async function getPineLabels({ study_filter, max_labels, verbose } = {}) {
+export async function getPineLabels({ study_filter, max_labels, verbose, pane_index } = {}) {
   const filter = study_filter || '';
-  const raw = await evaluate(buildGraphicsJS('dwglabels', 'labels', filter));
+  const raw = await evaluate(buildGraphicsJS('dwglabels', 'labels', filter, pane_index));
   if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
 
   const limit = max_labels || 50;
@@ -401,9 +414,9 @@ export async function getPineLabels({ study_filter, max_labels, verbose } = {}) 
   return { success: true, study_count: studies.length, studies };
 }
 
-export async function getPineTables({ study_filter } = {}) {
+export async function getPineTables({ study_filter, pane_index } = {}) {
   const filter = study_filter || '';
-  const raw = await evaluate(buildGraphicsJS('dwgtablecells', 'tableCells', filter));
+  const raw = await evaluate(buildGraphicsJS('dwgtablecells', 'tableCells', filter, pane_index));
   if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
 
   const studies = raw.map(s => {
@@ -429,9 +442,9 @@ export async function getPineTables({ study_filter } = {}) {
   return { success: true, study_count: studies.length, studies };
 }
 
-export async function getPineBoxes({ study_filter, verbose } = {}) {
+export async function getPineBoxes({ study_filter, verbose, pane_index } = {}) {
   const filter = study_filter || '';
-  const raw = await evaluate(buildGraphicsJS('dwgboxes', 'boxes', filter));
+  const raw = await evaluate(buildGraphicsJS('dwgboxes', 'boxes', filter, pane_index));
   if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
 
   const studies = raw.map(s => {

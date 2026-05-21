@@ -3,18 +3,23 @@ import { jsonResult } from './_format.js';
 import * as core from '../core/data.js';
 
 export function registerDataTools(server) {
+  const paneIndexSchema = z.coerce.number().int().nonnegative().optional()
+    .describe('Pane index (0-based, from pane_list). Omit to read the currently active pane.');
+
   server.tool('data_get_ohlcv', 'Get OHLCV bar data from the chart. Use summary=true for compact stats instead of all bars (saves context).', {
     count: z.coerce.number().optional().describe('Number of bars to retrieve (max 500, default 100)'),
     summary: z.coerce.boolean().optional().describe('Return summary stats (high, low, open, close, avg volume, range) instead of all bars — much smaller output'),
-  }, async ({ count, summary }) => {
-    try { return jsonResult(await core.getOhlcv({ count, summary })); }
+    pane_index: paneIndexSchema,
+  }, async ({ count, summary, pane_index }) => {
+    try { return jsonResult(await core.getOhlcv({ count, summary, pane_index })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
   server.tool('data_get_indicator', 'Get indicator/study info and input values', {
     entity_id: z.string().describe('Study entity ID (from chart_get_state)'),
-  }, async ({ entity_id }) => {
-    try { return jsonResult(await core.getIndicator({ entity_id })); }
+    pane_index: paneIndexSchema,
+  }, async ({ entity_id, pane_index }) => {
+    try { return jsonResult(await core.getIndicator({ entity_id, pane_index })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
@@ -37,8 +42,9 @@ export function registerDataTools(server) {
 
   server.tool('quote_get', 'Get real-time quote data for a symbol (price, OHLC, volume)', {
     symbol: z.string().optional().describe('Symbol to quote (blank = current chart symbol)'),
-  }, async ({ symbol }) => {
-    try { return jsonResult(await core.getQuote({ symbol })); }
+    pane_index: paneIndexSchema,
+  }, async ({ symbol, pane_index }) => {
+    try { return jsonResult(await core.getQuote({ symbol, pane_index })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
@@ -50,8 +56,9 @@ export function registerDataTools(server) {
   server.tool('data_get_pine_lines', 'Read horizontal price levels drawn by Pine Script indicators (line.new). Returns deduplicated price levels per study. Use study_filter to target a specific indicator.', {
     study_filter: z.string().optional().describe('Substring to match study name (e.g., "Profiler", "NY Levels"). Omit for all.'),
     verbose: z.coerce.boolean().optional().describe('Return raw line data with IDs, coordinates, colors (default false — returns only unique price levels)'),
-  }, async ({ study_filter, verbose }) => {
-    try { return jsonResult(await core.getPineLines({ study_filter, verbose })); }
+    pane_index: paneIndexSchema,
+  }, async ({ study_filter, verbose, pane_index }) => {
+    try { return jsonResult(await core.getPineLines({ study_filter, verbose, pane_index })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
@@ -59,28 +66,33 @@ export function registerDataTools(server) {
     study_filter: z.string().optional().describe('Substring to match study name. Omit for all.'),
     max_labels: z.coerce.number().optional().describe('Max labels per study (default 50). Set higher if you need all.'),
     verbose: z.coerce.boolean().optional().describe('Return raw label data with IDs, colors, positions (default false — returns only text + price)'),
-  }, async ({ study_filter, max_labels, verbose }) => {
-    try { return jsonResult(await core.getPineLabels({ study_filter, max_labels, verbose })); }
+    pane_index: paneIndexSchema,
+  }, async ({ study_filter, max_labels, verbose, pane_index }) => {
+    try { return jsonResult(await core.getPineLabels({ study_filter, max_labels, verbose, pane_index })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
   server.tool('data_get_pine_tables', 'Read table data drawn by Pine Script indicators (table.new). Returns formatted text rows per table. Use study_filter to target a specific indicator.', {
     study_filter: z.string().optional().describe('Substring to match study name. Omit for all.'),
-  }, async ({ study_filter }) => {
-    try { return jsonResult(await core.getPineTables({ study_filter })); }
+    pane_index: paneIndexSchema,
+  }, async ({ study_filter, pane_index }) => {
+    try { return jsonResult(await core.getPineTables({ study_filter, pane_index })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
   server.tool('data_get_pine_boxes', 'Read box/zone boundaries drawn by Pine Script indicators (box.new). Returns deduplicated {high, low} price zones. Use study_filter to target a specific indicator.', {
     study_filter: z.string().optional().describe('Substring to match study name. Omit for all.'),
     verbose: z.coerce.boolean().optional().describe('Return all boxes with IDs and coordinates (default false — returns unique price zones)'),
-  }, async ({ study_filter, verbose }) => {
-    try { return jsonResult(await core.getPineBoxes({ study_filter, verbose })); }
+    pane_index: paneIndexSchema,
+  }, async ({ study_filter, verbose, pane_index }) => {
+    try { return jsonResult(await core.getPineBoxes({ study_filter, verbose, pane_index })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
-  server.tool('data_get_study_values', 'Get current indicator values from the data window for all visible studies (RSI, MACD, Bollinger Bands, EMAs, custom indicators with plot()).', {}, async () => {
-    try { return jsonResult(await core.getStudyValues()); }
+  server.tool('data_get_study_values', 'Get current indicator values from the data window for all visible studies (RSI, MACD, Bollinger Bands, EMAs, custom indicators with plot()).', {
+    pane_index: paneIndexSchema,
+  }, async ({ pane_index }) => {
+    try { return jsonResult(await core.getStudyValues({ pane_index })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 }

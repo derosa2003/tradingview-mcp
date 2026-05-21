@@ -3,29 +3,37 @@ import { jsonResult } from './_format.js';
 import * as core from '../core/chart.js';
 
 export function registerChartTools(server) {
-  server.tool('chart_get_state', 'Get current chart state (symbol, timeframe, chart type, indicators)', {}, async () => {
-    try { return jsonResult(await core.getState()); }
+  const paneIndexSchema = z.coerce.number().int().nonnegative().optional()
+    .describe('Pane index (0-based, from pane_list). Omit to target the currently active pane. Use this to make multi-pane operations deterministic.');
+
+  server.tool('chart_get_state', 'Get current chart state (symbol, timeframe, chart type, indicators)', {
+    pane_index: paneIndexSchema,
+  }, async ({ pane_index }) => {
+    try { return jsonResult(await core.getState({ pane_index })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
   server.tool('chart_set_symbol', 'Change the chart symbol', {
     symbol: z.string().describe('Symbol to set (e.g., BTCUSD, AAPL, ES1!, NYMEX:CL1!)'),
-  }, async ({ symbol }) => {
-    try { return jsonResult(await core.setSymbol({ symbol })); }
+    pane_index: paneIndexSchema,
+  }, async ({ symbol, pane_index }) => {
+    try { return jsonResult(await core.setSymbol({ symbol, pane_index })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
   server.tool('chart_set_timeframe', 'Change the chart timeframe/resolution', {
     timeframe: z.string().describe('Timeframe (e.g., 1, 5, 15, 60, D, W, M)'),
-  }, async ({ timeframe }) => {
-    try { return jsonResult(await core.setTimeframe({ timeframe })); }
+    pane_index: paneIndexSchema,
+  }, async ({ timeframe, pane_index }) => {
+    try { return jsonResult(await core.setTimeframe({ timeframe, pane_index })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
   server.tool('chart_set_type', 'Change chart type', {
     chart_type: z.string().describe('Chart type: Bars(0), Candles(1), Line(2), Area(3), Renko(4), Kagi(5), PointAndFigure(6), LineBreak(7), HeikinAshi(8), HollowCandles(9) — pass name or number'),
-  }, async ({ chart_type }) => {
-    try { return jsonResult(await core.setType({ chart_type })); }
+    pane_index: paneIndexSchema,
+  }, async ({ chart_type, pane_index }) => {
+    try { return jsonResult(await core.setType({ chart_type, pane_index })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
@@ -34,8 +42,9 @@ export function registerChartTools(server) {
     indicator: z.string().describe('Full indicator name: "Relative Strength Index", "MACD", "Volume", "Moving Average", "Bollinger Bands", "Moving Average Exponential". Short names like RSI/EMA do NOT work.'),
     entity_id: z.string().optional().describe('Entity ID to remove (from chart_get_state). Required for remove.'),
     inputs: z.string().optional().describe('JSON string of input overrides for the indicator (e.g., \'{"length": 20}\')'),
-  }, async ({ action, indicator, entity_id, inputs }) => {
-    try { return jsonResult(await core.manageIndicator({ action, indicator, entity_id, inputs })); }
+    pane_index: paneIndexSchema,
+  }, async ({ action, indicator, entity_id, inputs, pane_index }) => {
+    try { return jsonResult(await core.manageIndicator({ action, indicator, entity_id, inputs, pane_index })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 

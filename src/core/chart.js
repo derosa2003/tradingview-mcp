@@ -1,7 +1,7 @@
 /**
  * Core chart control logic.
  */
-import { evaluate as _evaluate, evaluateAsync as _evaluateAsync, safeString, requireFinite } from '../connection.js';
+import { evaluate as _evaluate, evaluateAsync as _evaluateAsync, safeString, requireFinite, chartApiExpr } from '../connection.js';
 import { waitForChartReady as _waitForChartReady } from '../wait.js';
 
 const CHART_API = 'window.TradingViewApi._activeChartWidgetWV.value()';
@@ -14,11 +14,12 @@ function _resolve(deps) {
   };
 }
 
-export async function getState({ _deps } = {}) {
+export async function getState({ pane_index, _deps } = {}) {
   const { evaluate } = _resolve(_deps);
+  const expr = chartApiExpr(pane_index);
   const state = await evaluate(`
     (function() {
-      var chart = ${CHART_API};
+      var chart = ${expr};
       var studies = [];
       try {
         var allStudies = chart.getAllStudies();
@@ -34,37 +35,45 @@ export async function getState({ _deps } = {}) {
       };
     })()
   `);
-  return { success: true, ...state };
+  return { success: true, pane_index: pane_index ?? null, ...state };
 }
 
-export async function setSymbol({ symbol, _deps }) {
+export async function setSymbol({ symbol, pane_index, _deps }) {
   const { evaluateAsync, waitForChartReady } = _resolve(_deps);
+  const expr = chartApiExpr(pane_index);
   await evaluateAsync(`
     (function() {
-      var chart = ${CHART_API};
+      var chart = ${expr};
       return new Promise(function(resolve) {
         chart.setSymbol(${safeString(symbol)}, {});
         setTimeout(resolve, 500);
       });
     })()
   `);
-  const ready = await waitForChartReady(symbol);
-  return { success: true, symbol, chart_ready: ready };
+  // waitForChartReady reads the global DOM and can race when targeting a non-active pane;
+  // only wait when operating on the active pane.
+  const ready = pane_index === undefined || pane_index === null
+    ? await waitForChartReady(symbol)
+    : false;
+  return { success: true, symbol, pane_index: pane_index ?? null, chart_ready: ready };
 }
 
-export async function setTimeframe({ timeframe, _deps }) {
+export async function setTimeframe({ timeframe, pane_index, _deps }) {
   const { evaluate, waitForChartReady } = _resolve(_deps);
+  const expr = chartApiExpr(pane_index);
   await evaluate(`
     (function() {
-      var chart = ${CHART_API};
+      var chart = ${expr};
       chart.setResolution(${safeString(timeframe)}, {});
     })()
   `);
-  const ready = await waitForChartReady(null, timeframe);
-  return { success: true, timeframe, chart_ready: ready };
+  const ready = pane_index === undefined || pane_index === null
+    ? await waitForChartReady(null, timeframe)
+    : false;
+  return { success: true, timeframe, pane_index: pane_index ?? null, chart_ready: ready };
 }
 
-export async function setType({ chart_type, _deps }) {
+export async function setType({ chart_type, pane_index, _deps }) {
   const { evaluate } = _resolve(_deps);
   const typeMap = {
     'Bars': 0, 'Candles': 1, 'Line': 2, 'Area': 3,
@@ -75,41 +84,43 @@ export async function setType({ chart_type, _deps }) {
   if (isNaN(typeNum) || typeNum < 0 || typeNum > 9 || !Number.isInteger(typeNum)) {
     throw new Error(`Unknown chart type: ${chart_type}. Use a name (Candles, Line, etc.) or number (0-9).`);
   }
+  const expr = chartApiExpr(pane_index);
   await evaluate(`
     (function() {
-      var chart = ${CHART_API};
+      var chart = ${expr};
       chart.setChartType(${typeNum});
     })()
   `);
-  return { success: true, chart_type, type_num: typeNum };
+  return { success: true, chart_type, type_num: typeNum, pane_index: pane_index ?? null };
 }
 
-export async function manageIndicator({ action, indicator, entity_id, inputs: inputsRaw, _deps }) {
+export async function manageIndicator({ action, indicator, entity_id, inputs: inputsRaw, pane_index, _deps }) {
   const { evaluate } = _resolve(_deps);
   const inputs = inputsRaw ? (typeof inputsRaw === 'string' ? JSON.parse(inputsRaw) : inputsRaw) : undefined;
+  const expr = chartApiExpr(pane_index);
 
   if (action === 'add') {
     const inputArr = inputs ? Object.entries(inputs).map(([k, v]) => ({ id: k, value: v })) : [];
-    const before = await evaluate(`${CHART_API}.getAllStudies().map(function(s) { return s.id; })`);
+    const before = await evaluate(`${expr}.getAllStudies().map(function(s) { return s.id; })`);
     await evaluate(`
       (function() {
-        var chart = ${CHART_API};
+        var chart = ${expr};
         chart.createStudy(${safeString(indicator)}, false, false, ${JSON.stringify(inputArr)});
       })()
     `);
     await new Promise(r => setTimeout(r, 1500));
-    const after = await evaluate(`${CHART_API}.getAllStudies().map(function(s) { return s.id; })`);
+    const after = await evaluate(`${expr}.getAllStudies().map(function(s) { return s.id; })`);
     const newIds = (after || []).filter(id => !(before || []).includes(id));
-    return { success: newIds.length > 0, action: 'add', indicator, entity_id: newIds[0] || null, new_study_count: newIds.length };
+    return { success: newIds.length > 0, action: 'add', indicator, entity_id: newIds[0] || null, new_study_count: newIds.length, pane_index: pane_index ?? null };
   } else if (action === 'remove') {
     if (!entity_id) throw new Error('entity_id required for remove action. Use chart_get_state to find study IDs.');
     await evaluate(`
       (function() {
-        var chart = ${CHART_API};
+        var chart = ${expr};
         chart.removeEntity(${safeString(entity_id)});
       })()
     `);
-    return { success: true, action: 'remove', entity_id };
+    return { success: true, action: 'remove', entity_id, pane_index: pane_index ?? null };
   } else {
     throw new Error('action must be "add" or "remove"');
   }
