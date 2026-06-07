@@ -67,6 +67,7 @@ export async function waitForChartReady(expectedSymbol = null, expectedTf = null
     await new Promise(r => setTimeout(r, POLL_INTERVAL));
   }
 
-  // Timeout — return true anyway, caller should verify
+  // Timed out without the chart stabilizing — return false so callers can
+  // surface "not ready" honestly rather than assuming success.
   return false;
 }

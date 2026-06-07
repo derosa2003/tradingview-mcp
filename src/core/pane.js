@@ -84,16 +84,19 @@ export async function setLayout({ layout }) {
     throw new Error(`Unknown layout "${layout}". Available layouts:\n${available}`);
   }
 
+  const beforeCount = (await list()).chart_count;
   await evaluateAsync(`${CWC}.setLayout(${safeString(resolved)})`);
   await new Promise(r => setTimeout(r, 500));
 
   const state = await list();
+  const shrank = typeof beforeCount === 'number' && state.chart_count < beforeCount;
   return {
     success: true,
     layout: resolved,
     layout_name: LAYOUT_NAMES[resolved],
     chart_count: state.chart_count,
     panes: state.panes,
+    ...(shrank ? { warning: `Layout shrank from ${beforeCount} to ${state.chart_count} panes — TradingView dropped the extra panes (their symbols/studies are gone from this layout). Save a layout first if you need them back.` } : {}),
   };
 }
 
@@ -149,5 +152,16 @@ export async function setSymbol({ index, symbol }) {
     })()
   `);
 
-  return { success: true, index: idx, symbol };
+  // Read back to verify the symbol actually applied — previously fire-and-sleep
+  // that returned success:true without confirming anything.
+  const actual = await evaluate(`(function(){ try { return window.TradingViewApi.chart(${idx}).symbol(); } catch(e) { return null; } })()`);
+  const norm = (x) => { const s = String(x ?? '').toUpperCase(); const i = s.indexOf(':'); return i >= 0 ? s.slice(i + 1) : s; };
+  const applied = !!actual && norm(actual) === norm(symbol);
+  return {
+    success: applied,
+    index: idx,
+    symbol,
+    actual_symbol: actual ?? null,
+    ...(applied ? {} : { error: `Pane ${idx} symbol read back as "${actual}", not "${symbol}" — it may be invalid or still loading.` }),
+  };
 }

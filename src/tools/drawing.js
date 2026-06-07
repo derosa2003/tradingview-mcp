@@ -19,8 +19,10 @@ export function registerDrawingTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
-  server.tool('draw_clear', 'Remove all drawings from the chart', {}, async () => {
-    try { return jsonResult(await core.clearAll()); }
+  server.tool('draw_clear', 'Remove ALL drawings from the chart. Destructive — requires confirm:true when the chart has any drawings.', {
+    confirm: z.coerce.boolean().optional().describe('Must be true to actually wipe all drawings. Without it, returns the count and refuses (guard against destroying user drawings).'),
+  }, async ({ confirm }) => {
+    try { return jsonResult(await core.clearAll({ confirm })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 

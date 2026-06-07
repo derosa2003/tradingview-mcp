@@ -56,24 +56,14 @@ export async function apply({ name, pane_index, replace = true }) {
   const apiExpr = chartApiExpr(pane_index);
 
   if (!replace) {
-    // Snapshot current studies in the target pane, apply template, then re-add
-    // the originals on top. This is a coarse approximation — input values are
-    // preserved but z-order may shift.
-    const before = await evaluate(`
-      (function(){
-        return ${apiExpr}.getAllStudies().map(function(s){ return s.id; });
-      })()
-    `);
-    // Apply the template (this replaces)
-    await _doApply(name, pane_index);
-    // Re-add nothing here — the prior studies were removed; the "layer" case
-    // is intentionally a no-op fallback. We surface this limitation in the result.
-    return {
-      success: true,
-      name,
-      pane_index: pane_index ?? null,
-      note: 'replace=false is a best-effort flag; applyStudyTemplate replaces all studies in the target pane. Prior study IDs (now removed): ' + (before || []).length,
-    };
+    // Refuse BEFORE doing anything destructive. TradingView's applyStudyTemplate
+    // always replaces every study in the target pane — there is no native layer
+    // mode. The old code applied (destroying the pane's studies) and only then
+    // reported they were gone. Fail loudly instead of destroy-and-report.
+    throw new Error(
+      'replace=false is not supported: TradingView\'s applyStudyTemplate ALWAYS replaces all studies in the target pane (no native layer mode). ' +
+      'No studies were touched. To keep the current studies, save them as a template first, then apply with replace=true (the default).'
+    );
   }
 
   await _doApply(name, pane_index);
@@ -133,11 +123,16 @@ export async function save({ name, pane_index, on_conflict = 'error' }) {
   // Refresh + check for conflict
   const existing = await list();
   const conflict = existing.templates.find(t => t.name === name);
+  let deletedExisting = false;
   if (conflict) {
     if (on_conflict === 'error') {
       throw new Error(`A template named "${name}" already exists. Pass on_conflict:"overwrite" to replace.`);
     }
-    await remove({ name }); // delete then re-save
+    // NOTE: TradingView has no atomic template-replace; overwrite = delete then
+    // re-save. If the re-save fails below, the original is gone — we surface
+    // that explicitly in the failure path rather than failing silently.
+    await remove({ name });
+    deletedExisting = true;
   }
 
   // Switch to the target pane (template captures from active chart)
@@ -184,15 +179,21 @@ export async function save({ name, pane_index, on_conflict = 'error' }) {
       input.dispatchEvent(new Event('change', { bubbles: true }));
       await new Promise(function(r){ setTimeout(r, 250); });
 
-      // Click primary action button
+      // Click the primary action button — WHITELIST ONLY. Never fall back to
+      // "the last button on the page/dialog": that is exactly how a stale
+      // selector turns a save into a destructive misclick (cf. the pine
+      // smart_compile saveButton fall-through). If nothing matches, throw.
       var btns = dialog.querySelectorAll('button');
       var btn = null;
       for (var j = 0; j < btns.length; j++) {
         var t = (btns[j].textContent || '').trim().toLowerCase();
-        if (t === 'save' || t === 'create' || t === 'ok' || t === 'submit') { btn = btns[j]; break; }
+        if (t === 'save' || t === 'create' || t === 'ok' || t === 'submit' ||
+            t === 'overwrite' || t === 'replace' || /^save\b/.test(t) || /^create\b/.test(t)) { btn = btns[j]; break; }
       }
-      if (!btn && btns.length > 0) btn = btns[btns.length - 1];
-      if (!btn) throw new Error('No primary action button in template dialog');
+      if (!btn) {
+        var labels = Array.prototype.map.call(btns, function(b){ return (b.textContent||'').trim(); }).filter(Boolean).join(' | ');
+        throw new Error('No whitelisted save/create button in template dialog — refusing to click an arbitrary button. Buttons seen: [' + labels + ']');
+      }
       btn.click();
 
       // Wait for save then refresh
@@ -205,7 +206,12 @@ export async function save({ name, pane_index, on_conflict = 'error' }) {
     })()
   `);
 
-  if (!result) throw new Error(`Template "${name}" did not appear in the list after save. The dialog interaction may have failed.`);
+  if (!result) {
+    const lost = deletedExisting
+      ? ' WARNING: the existing template was already deleted as part of the overwrite and has been LOST — re-save it from the pane.'
+      : '';
+    throw new Error(`Template "${name}" did not appear in the list after save. The dialog interaction may have failed.${lost}`);
+  }
   return { success: true, id: result.id, name: result.name, pane_index: pane_index ?? null };
 }
 
@@ -231,7 +237,7 @@ export async function remove({ name }) {
       var deadline = Date.now() + 6000;
       var btn = null;
       while (Date.now() < deadline) {
-        var btns = document.querySelectorAll('[role="dialog"] button, [data-name*="confirm"] button, button');
+        var btns = document.querySelectorAll('[role="dialog"] button, [data-name*="confirm"] button');
         for (var i = 0; i < btns.length; i++) {
           var b = btns[i];
           var t = (b.textContent || '').trim().toLowerCase();

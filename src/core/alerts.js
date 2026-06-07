@@ -105,19 +105,15 @@ export async function list() {
 
 export async function deleteAlerts({ delete_all }) {
   if (delete_all) {
-    const result = await evaluate(`
-      (function() {
-        var alertBtn = document.querySelector('[data-name="alerts"]');
-        if (alertBtn) alertBtn.click();
-        var header = document.querySelector('[data-name="alerts"]');
-        if (header) {
-          header.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 100, clientY: 100 }));
-          return { context_menu_opened: true };
-        }
-        return { context_menu_opened: false };
-      })()
-    `);
-    return { success: true, note: 'Alert deletion requires manual confirmation in the context menu.', context_menu_opened: result?.context_menu_opened || false, source: 'dom_fallback' };
+    // The previous implementation opened a context menu and returned
+    // success:true while deleting NOTHING — a silent-success lie. Report
+    // honestly instead of pretending the alerts were removed.
+    return {
+      success: false,
+      deleted: 0,
+      error: 'Programmatic alert deletion is not implemented. Delete alerts from the Alerts panel manually. (Future fix: call the pricealerts REST delete endpoint with the alert_id from alert_list.)',
+      source: 'not_implemented',
+    };
   }
-  throw new Error('Individual alert deletion not yet supported. Use delete_all: true.');
+  throw new Error('Individual alert deletion is not yet supported. alert_list returns alert_id values, but a per-id REST delete is not wired up yet.');
 }

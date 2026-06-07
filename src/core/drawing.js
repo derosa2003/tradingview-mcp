@@ -44,7 +44,8 @@ export async function drawShape({ shape, point, point2, overrides: overridesRaw,
   return { success: true, shape, entity_id: result?.entity_id };
 }
 
-export async function listDrawings() {
+export async function listDrawings({ _deps } = {}) {
+  const { evaluate, getChartApi } = _resolve(_deps);
   const apiPath = await getChartApi();
   const shapes = await evaluate(`
     (function() {
@@ -56,7 +57,8 @@ export async function listDrawings() {
   return { success: true, count: shapes?.length || 0, shapes: shapes || [] };
 }
 
-export async function getProperties({ entity_id }) {
+export async function getProperties({ entity_id, _deps }) {
+  const { evaluate, getChartApi } = _resolve(_deps);
   const apiPath = await getChartApi();
   const result = await evaluate(`
     (function() {
@@ -85,7 +87,8 @@ export async function getProperties({ entity_id }) {
   return { success: true, ...result };
 }
 
-export async function removeOne({ entity_id }) {
+export async function removeOne({ entity_id, _deps }) {
+  const { evaluate, getChartApi } = _resolve(_deps);
   const apiPath = await getChartApi();
   const result = await evaluate(`
     (function() {
@@ -106,8 +109,18 @@ export async function removeOne({ entity_id }) {
   return { success: true, entity_id: result?.entity_id, removed: result?.removed, remaining_shapes: result?.remaining_shapes };
 }
 
-export async function clearAll() {
+export async function clearAll({ confirm, _deps } = {}) {
+  const { evaluate, getChartApi } = _resolve(_deps);
   const apiPath = await getChartApi();
+  const count = await evaluate(`${apiPath}.getAllShapes().length`);
+  if ((count || 0) > 0 && confirm !== true) {
+    return {
+      success: false,
+      error: `draw_clear removes ALL ${count} drawing(s) on the chart. Re-call with confirm:true to proceed.`,
+      count: count || 0,
+      hint: 'Guard against wiping user drawings — use draw_remove_one to remove a single shape by id.',
+    };
+  }
   await evaluate(`${apiPath}.removeAllShapes()`);
-  return { success: true, action: 'all_shapes_removed' };
+  return { success: true, action: 'all_shapes_removed', removed: count || 0 };
 }

@@ -66,42 +66,56 @@ export async function newTab() {
 }
 
 /**
- * Close the current tab via keyboard shortcut (Ctrl+W / Cmd+W).
+ * Close a specific tab by index (from tab_list), targeting its CDP page target
+ * directly. The old implementation fired Cmd/Ctrl+W, which closes whatever tab
+ * is *frontmost* — it could close the user's real chart. An explicit index is
+ * now required so the close is deterministic.
  */
-export async function closeTab() {
+export async function closeTab({ index } = {}) {
   const before = await list();
   if (before.tab_count <= 1) {
     throw new Error('Cannot close the last tab. Use tv_launch to restart TradingView instead.');
   }
+  if (index === undefined || index === null) {
+    return {
+      success: false,
+      error: 'tab_close requires an explicit index (from tab_list) so it never closes the wrong chart. Pass { index } for the tab you want to close.',
+      tabs: before.tabs,
+    };
+  }
+  const idx = Number(index);
+  if (!Number.isInteger(idx) || idx < 0 || idx >= before.tab_count) {
+    throw new Error(`Tab index ${index} out of range (have ${before.tab_count} tabs).`);
+  }
+  const target = before.tabs[idx];
 
-  const c = await getClient();
-  const isMac = process.platform === 'darwin';
-  const mod = isMac ? 4 : 2;
-
-  await c.Input.dispatchKeyEvent({
-    type: 'keyDown',
-    modifiers: mod,
-    key: 'w',
-    code: 'KeyW',
-    windowsVirtualKeyCode: 87,
-  });
-  await c.Input.dispatchKeyEvent({ type: 'keyUp', key: 'w', code: 'KeyW' });
-
-  await new Promise(r => setTimeout(r, 1000));
+  // Close the specific CDP page target by id — deterministic, not frontmost.
+  try {
+    await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/close/${target.id}`);
+  } catch (e) {
+    throw new Error(`Failed to close tab ${idx} (${target.id}): ${e.message}`);
+  }
+  await new Promise(r => setTimeout(r, 800));
 
   const after = await list();
   const closed = after.tab_count < before.tab_count;
   return {
     success: closed,
     action: 'tab_closed',
+    closed_index: idx,
+    closed_chart_id: target.chart_id,
     tabs_before: before.tab_count,
     tabs_after: after.tab_count,
-    ...(closed ? {} : { error: 'Tab count did not decrease; close keystroke may not have reached the renderer.' }),
+    ...(closed ? {} : { error: 'Tab count did not decrease; the close request may not have landed.' }),
   };
 }
 
 /**
- * Switch to a tab by index. Reconnects CDP to the new target.
+ * Bring a tab to the front by index (CDP activate). NOTE: this only changes
+ * which tab is visually frontmost — it does NOT repoint the MCP's CDP client at
+ * the new tab's target, so subsequent chart/data tools still operate on the
+ * originally-connected chart. Driving a different chart should be done with
+ * pane_index / layout tools, not by switching tabs.
  */
 export async function switchTab({ index }) {
   const tabs = await list();
@@ -113,11 +127,16 @@ export async function switchTab({ index }) {
 
   const target = tabs.tabs[idx];
 
-  // Use CDP Target.activateTarget to bring the tab to front
   try {
-    const resp = await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/activate/${target.id}`);
-    const text = await resp.text();
-    return { success: true, action: 'switched', index: idx, tab_id: target.id, chart_id: target.chart_id };
+    await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/activate/${target.id}`);
+    return {
+      success: true,
+      action: 'switched',
+      index: idx,
+      tab_id: target.id,
+      chart_id: target.chart_id,
+      note: 'Tab brought to front visually. The MCP connection still targets the original tab — chart/data tools will not operate on this tab until the server reconnects.',
+    };
   } catch (e) {
     throw new Error(`Failed to activate tab ${idx}: ${e.message}`);
   }

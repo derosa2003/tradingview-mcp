@@ -60,7 +60,13 @@ function buildGraphicsJS(collectionName, mapKey, filter, pane_index) {
 }
 
 export async function getOhlcv({ count, summary, pane_index } = {}) {
-  const limit = Math.min(count || 100, MAX_OHLCV_BARS);
+  // Clamp to [1, MAX]. Previously `Math.min(count || 100, MAX)` turned count=0
+  // into 100 (falsy coercion) and let negatives through (→ 0 bars → misleading
+  // "chart still loading" error).
+  const requested = Number(count);
+  const limit = Number.isFinite(requested)
+    ? Math.max(1, Math.min(Math.trunc(requested), MAX_OHLCV_BARS))
+    : 100;
   const bp = barsExpr(pane_index);
   let data;
   try {
@@ -172,7 +178,9 @@ export async function getStrategyResults() {
       } catch(e) { return {metrics: {}, source: 'internal_api', error: e.message}; }
     })()
   `);
-  return { success: true, metric_count: Object.keys(results?.metrics || {}).length, source: results?.source, metrics: results?.metrics || {}, error: results?.error };
+  const metricCount = Object.keys(results?.metrics || {}).length;
+  const err = results?.error || (metricCount === 0 ? 'No strategy report data available — add a strategy and open the Strategy Tester.' : null);
+  return { success: !err, metric_count: metricCount, source: results?.source, metrics: results?.metrics || {}, ...(err ? { error: err } : {}) };
 }
 
 export async function getTrades({ max_trades } = {}) {
@@ -250,7 +258,9 @@ export async function getEquity() {
       } catch(e) { return {data: [], source: 'internal_api', error: e.message}; }
     })()
   `);
-  return { success: true, data_points: equity?.data?.length || 0, source: equity?.source, data: equity?.data || [], equity_summary: equity?.equity_summary, note: equity?.note, error: equity?.error };
+  const points = equity?.data?.length || 0;
+  const err = equity?.error || (points === 0 && !equity?.equity_summary ? 'No equity data available — add a strategy and open the Strategy Tester.' : null);
+  return { success: !err, data_points: points, source: equity?.source, data: equity?.data || [], equity_summary: equity?.equity_summary, note: equity?.note, ...(err ? { error: err } : {}) };
 }
 
 export async function getQuote({ symbol, pane_index } = {}) {
@@ -259,13 +269,18 @@ export async function getQuote({ symbol, pane_index } = {}) {
   const data = await evaluate(`
     (function() {
       var api = ${apiExpr};
-      var sym = ${safeString(symbol || '')};
-      if (!sym) { try { sym = api.symbol(); } catch(e) {} }
-      if (!sym) { try { sym = api.symbolExt().symbol; } catch(e) {} }
+      // Quote data ALWAYS comes from the pane's loaded bars. Label it with the
+      // pane's ACTUAL symbol, never the requested one — otherwise a request for
+      // a different symbol returns this pane's data wearing the wrong name.
+      var actual = '';
+      try { actual = api.symbol(); } catch(e) {}
+      if (!actual) { try { actual = api.symbolExt().symbol; } catch(e) {} }
+      var requested = ${safeString(symbol || '')};
+      function norm(x){ x = String(x || '').toUpperCase(); var i = x.indexOf(':'); return i >= 0 ? x.slice(i + 1) : x; }
       var ext = {};
       try { ext = api.symbolExt() || {}; } catch(e) {}
       var bars = ${bp};
-      var quote = { symbol: sym };
+      var quote = { symbol: actual, requested_symbol: requested || null, symbol_mismatch: !!(requested && norm(requested) !== norm(actual)) };
       if (bars && typeof bars.lastIndex === 'function') {
         var last = bars.valueAt(bars.lastIndex());
         if (last) { quote.time = last[0]; quote.open = last[1]; quote.high = last[2]; quote.low = last[3]; quote.close = last[4]; quote.last = last[4]; quote.volume = last[5] || 0; }
@@ -286,7 +301,16 @@ export async function getQuote({ symbol, pane_index } = {}) {
       return quote;
     })()
   `);
-  if (!data || (!data.last && !data.close)) throw new Error('Could not retrieve quote. The chart may still be loading.');
+  if (!data) throw new Error('Could not retrieve quote. The chart may still be loading.');
+  if (data.symbol_mismatch) {
+    return {
+      success: false,
+      error: `quote_get returns data for the chart's loaded symbol ("${data.symbol}"), but you requested "${data.requested_symbol}". This tool reads the chart's bars and cannot quote an arbitrary symbol. Switch the chart/pane to it first (chart_set_symbol), or target the pane that has it (pane_index).`,
+      chart_symbol: data.symbol,
+      requested_symbol: data.requested_symbol,
+    };
+  }
+  if (!data.last && !data.close) throw new Error('Could not retrieve quote. The chart may still be loading.');
   return { success: true, ...data };
 }
 

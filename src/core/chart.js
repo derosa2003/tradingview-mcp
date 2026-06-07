@@ -53,7 +53,16 @@ export async function setSymbol({ symbol, pane_index, _deps }) {
   // Use the per-pane dataReady() poll regardless of which pane we hit — it
   // reads the chart API directly, not the DOM, so it's accurate for any pane.
   const r = await waitReady({ pane_index, timeout_ms: 8000, _deps });
-  return { success: true, symbol, pane_index: pane_index ?? null, chart_ready: r.ready, waited_ms: r.waited_ms ?? null };
+  // Honest result: a bogus symbol still "sets" (the field changes) but data never
+  // loads. Reflect that in `success` rather than always returning true.
+  return {
+    success: !!r.ready,
+    symbol,
+    pane_index: pane_index ?? null,
+    chart_ready: r.ready,
+    waited_ms: r.waited_ms ?? null,
+    ...(r.ready ? {} : { error: `Symbol set to "${symbol}" but no data loaded within ${r.timeout_ms || 8000}ms — it may be invalid or data is temporarily unavailable.` }),
+  };
 }
 
 export async function setTimeframe({ timeframe, pane_index, _deps }) {
@@ -66,7 +75,20 @@ export async function setTimeframe({ timeframe, pane_index, _deps }) {
     })()
   `);
   const r = await waitReady({ pane_index, timeout_ms: 8000, _deps });
-  return { success: true, timeframe, pane_index: pane_index ?? null, chart_ready: r.ready, waited_ms: r.waited_ms ?? null };}
+  // Verify the resolution actually changed — setResolution silently ignores
+  // invalid inputs, so without a read-back a bogus timeframe returns success.
+  const actual = await evaluate(`${chartApiExpr(pane_index)}.resolution()`);
+  const norm = (x) => { const s = String(x ?? '').toUpperCase(); return /^[DWM]$/.test(s) ? '1' + s : s; };
+  const applied = norm(actual) === norm(timeframe);
+  return {
+    success: applied,
+    timeframe,
+    actual_resolution: actual ?? null,
+    pane_index: pane_index ?? null,
+    chart_ready: r.ready,
+    waited_ms: r.waited_ms ?? null,
+    ...(applied ? {} : { error: `Timeframe did not change to "${timeframe}" — chart is still on "${actual}". The value may be invalid (use 1, 5, 15, 60, D, W, M).` }),
+  };}
 
 export async function setType({ chart_type, pane_index, _deps }) {
   const { evaluate } = _resolve(_deps);
@@ -287,7 +309,8 @@ export async function waitReady({ pane_index, timeout_ms = 8000, _deps } = {}) {
   return { success: false, ready: false, pane_index: pane_index ?? null, symbol: lastSym, resolution: lastRes, timeout_ms, error: 'dataReady never became true within timeout' };
 }
 
-export async function getVisibleRange() {
+export async function getVisibleRange({ _deps } = {}) {
+  const { evaluate } = _resolve(_deps);
   const result = await evaluate(`
     (function() {
       var chart = ${CHART_API};
@@ -329,7 +352,8 @@ export async function setVisibleRange({ from, to, _deps }) {
   return { success: true, requested: { from, to }, actual: actual || { from: 0, to: 0 } };
 }
 
-export async function scrollToDate({ date }) {
+export async function scrollToDate({ date, _deps }) {
+  const { evaluate } = _resolve(_deps);
   let timestamp;
   if (/^\d+$/.test(date)) timestamp = Number(date);
   else timestamp = Math.floor(new Date(date).getTime() / 1000);
@@ -368,7 +392,8 @@ export async function scrollToDate({ date }) {
   return { success: true, date, centered_on: timestamp, resolution, window: { from, to } };
 }
 
-export async function symbolInfo() {
+export async function symbolInfo({ _deps } = {}) {
+  const { evaluate } = _resolve(_deps);
   const result = await evaluate(`
     (function() {
       var chart = ${CHART_API};

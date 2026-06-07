@@ -34,8 +34,11 @@ register('draw', {
       handler: (opts, positionals) => core.removeOne({ entity_id: positionals[0] }),
     }],
     ['clear', {
-      description: 'Remove all drawings',
-      handler: () => core.clearAll(),
+      description: 'Remove ALL drawings (requires --confirm / -y)',
+      options: {
+        confirm: { type: 'boolean', short: 'y', description: 'Confirm wiping every drawing on the chart' },
+      },
+      handler: (opts) => core.clearAll({ confirm: !!opts.confirm }),
     }],
   ]),
 });

@@ -13,8 +13,10 @@ export function registerTabTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
-  server.tool('tab_close', 'Close the current chart tab', {}, async () => {
-    try { return jsonResult(await core.closeTab()); }
+  server.tool('tab_close', 'Close a specific chart tab by index (from tab_list). Requires index so it never closes the wrong/frontmost chart.', {
+    index: z.coerce.number().int().nonnegative().describe('Tab index (0-based, from tab_list) of the tab to close.'),
+  }, async ({ index }) => {
+    try { return jsonResult(await core.closeTab({ index })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 

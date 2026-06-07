@@ -79,21 +79,47 @@ export async function load({ name_or_id }) {
         || layouts.find(l => (l.name || '').toLowerCase().includes(lower));
     if (!match) throw new Error(`No layout matching "${target}"`);
   }
-  await evaluateAsync(`window.TradingViewApi.loadChartFromServer(${match.id})`);
-  // Dismiss "unsaved changes" confirmation if present
+  // loadChartFromServer navigates the chart, which destroys the JS execution
+  // context mid-call — so awaiting its promise throws "Promise was collected".
+  // Fire it and tolerate that specific navigation error, then verify by polling.
+  try {
+    await evaluateAsync(`window.TradingViewApi.loadChartFromServer(${match.id})`);
+  } catch (e) {
+    const msg = String(e?.message || e);
+    if (!/Promise was collected|context was destroyed|target navigated|Cannot find context|detached/i.test(msg)) throw e;
+  }
+
+  // Dismiss "unsaved changes" confirmation if present (best-effort).
   await new Promise(r => setTimeout(r, 600));
-  await evaluate(`
-    (function(){
-      var btns = document.querySelectorAll('button');
-      for (var i = 0; i < btns.length; i++) {
-        var text = (btns[i].textContent || '').trim();
-        if (/open anyway|don't save|discard/i.test(text)) { btns[i].click(); return true; }
-      }
-      return false;
-    })()
-  `);
-  await new Promise(r => setTimeout(r, 800));
-  return { success: true, id: match.id, name: match.name };
+  try {
+    await evaluate(`
+      (function(){
+        var btns = document.querySelectorAll('button');
+        for (var i = 0; i < btns.length; i++) {
+          var text = (btns[i].textContent || '').trim();
+          if (/open anyway|don't save|discard/i.test(text)) { btns[i].click(); return true; }
+        }
+        return false;
+      })()
+    `);
+  } catch {}
+
+  // Verify the switch landed by polling the currently-loaded layout id (the
+  // context comes back a couple seconds after the navigation).
+  let loaded = false;
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 300));
+    try {
+      const cur = await current();
+      if (cur && String(cur.id) === String(match.id)) { loaded = true; break; }
+    } catch { /* context mid-navigation — keep polling */ }
+  }
+  return {
+    success: loaded,
+    id: match.id,
+    name: match.name,
+    ...(loaded ? {} : { warning: 'Issued loadChartFromServer but could not confirm the layout loaded within timeout — verify with layout_current.' }),
+  };
 }
 
 /**

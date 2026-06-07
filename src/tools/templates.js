@@ -14,7 +14,7 @@ export function registerTemplateTools(server) {
   server.tool('indicator_template_apply', 'Apply a saved indicator template to a pane by name. Silent — no dialog. Note: applyStudyTemplate replaces all studies in the target pane (TradingView native behavior).', {
     name: z.string().describe('Template name (exact match)'),
     pane_index: paneIndexSchema,
-    replace: z.coerce.boolean().optional().describe('Default true. Pass false to acknowledge the layer-mode limitation (TV always replaces).'),
+    replace: z.coerce.boolean().optional().describe('Default true. TradingView always replaces all studies in the target pane (no layer mode). Passing false is REJECTED with an error so the pane\'s studies are never silently destroyed.'),
   }, async ({ name, pane_index, replace }) => {
     try { return jsonResult(await core.apply({ name, pane_index, replace })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }

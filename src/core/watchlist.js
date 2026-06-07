@@ -75,11 +75,29 @@ export async function list() {
   };
 }
 
+/**
+ * Resolve the active watchlist id. TVD.getActiveWatchlistId() is null whenever
+ * the sidebar hasn't initialized, even though a list IS marked active — so fall
+ * back to the REST list's `active` flag (the authoritative source).
+ */
+async function _getActiveId() {
+  let id = null;
+  try { id = await evaluateAsync(`(window.TVD && typeof window.TVD.getActiveWatchlistId === 'function') ? window.TVD.getActiveWatchlistId() : null`); } catch {}
+  if (id) return id;
+  try {
+    const res = _ensureOk(await call('GET', `${BASE}/custom/`), 'list');
+    const wls = Array.isArray(res.parsed) ? res.parsed : [];
+    const active = wls.find(w => w.active);
+    if (active) return active.id;
+  } catch {}
+  return null;
+}
+
 /** Get the currently-active watchlist with all symbols. */
 export async function getActive() {
-  const id = await evaluateAsync(`window.TVD.getActiveWatchlistId()`);
+  const id = await _getActiveId();
   if (!id) {
-    return { success: false, error: 'No active watchlist (TVD.getActiveWatchlistId returned null)' };
+    return { success: false, error: 'No active watchlist found (TVD.getActiveWatchlistId is null and no watchlist has active=true in the REST list).' };
   }
   const res = _ensureOk(await call('GET', `${BASE}/custom/${id}/`), 'get_active');
   return { success: true, id, name: res.parsed?.name, symbols: res.parsed?.symbols || [] };
@@ -127,7 +145,7 @@ export async function setActive({ name_or_id }) {
  */
 export async function addBatch({ symbols, watchlist }) {
   if (!Array.isArray(symbols) || symbols.length === 0) throw new Error('symbols must be a non-empty array');
-  const id = watchlist ? await _resolveId(watchlist) : await evaluateAsync(`window.TVD.getActiveWatchlistId()`);
+  const id = watchlist ? await _resolveId(watchlist) : await _getActiveId();
   if (!id) throw new Error('No target watchlist (no active and no watchlist arg)');
   const res = _ensureOk(await call('POST', `${BASE}/custom/${id}/append/`, { json: symbols }), 'append');
   return { success: true, watchlist_id: id, symbols_now: res.parsed || [], added: symbols };
@@ -143,7 +161,7 @@ export async function add({ symbol, watchlist }) {
 /** Remove one or more symbols. */
 export async function removeSymbols({ symbols, watchlist }) {
   if (!Array.isArray(symbols) || symbols.length === 0) throw new Error('symbols must be a non-empty array');
-  const id = watchlist ? await _resolveId(watchlist) : await evaluateAsync(`window.TVD.getActiveWatchlistId()`);
+  const id = watchlist ? await _resolveId(watchlist) : await _getActiveId();
   if (!id) throw new Error('No target watchlist');
   const res = _ensureOk(await call('POST', `${BASE}/custom/${id}/remove/`, { json: symbols }), 'remove_symbols');
   return { success: true, watchlist_id: id, symbols_now: res.parsed || [], removed: symbols };
