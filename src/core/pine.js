@@ -287,36 +287,36 @@ export async function compile() {
 
   const clicked = await evaluate(`
     (function() {
+      // SAFE compile: only click non-persisting add/update buttons. Never click
+      // "Save and add to chart" or a "saveButton" — those overwrite the bound
+      // cloud script (prior corruption vector).
       var btns = document.querySelectorAll('button');
-      var fallback = null;
-      var saveBtn = null;
+      var addUpdate = null, saveAndAdd = false;
       for (var i = 0; i < btns.length; i++) {
         var text = btns[i].textContent.trim();
-        if (/save and add to chart/i.test(text)) {
-          btns[i].click();
-          return 'Save and add to chart';
-        }
-        if (!fallback && /^(Add to chart|Update on chart)/i.test(text)) {
-          fallback = btns[i];
-        }
-        if (!saveBtn && btns[i].className.indexOf('saveButton') !== -1 && btns[i].offsetParent !== null) {
-          saveBtn = btns[i];
-        }
+        if (!addUpdate && /^(Add to chart|Update on chart)$/i.test(text)) addUpdate = btns[i];
+        if (/save and add to chart/i.test(text)) saveAndAdd = true;
       }
-      if (fallback) { fallback.click(); return fallback.textContent.trim(); }
-      if (saveBtn) { saveBtn.click(); return 'Pine Save'; }
-      return null;
+      if (addUpdate) { addUpdate.click(); return addUpdate.textContent.trim(); }
+      return saveAndAdd ? 'SKIPPED_SAVE_AND_ADD' : null;
     })()
   `);
 
   if (!clicked) {
     const c = await getClient();
-    await c.Input.dispatchKeyEvent({ type: 'keyDown', modifiers: 2, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
-    await c.Input.dispatchKeyEvent({ type: 'keyUp', key: 'Enter', code: 'Enter' });
+    const mods = process.platform === 'darwin' ? 4 : 2;
+    await c.Input.dispatchKeyEvent({ type: 'keyDown', modifiers: mods, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await c.Input.dispatchKeyEvent({ type: 'keyUp', modifiers: mods, key: 'Enter', code: 'Enter' });
   }
 
   await new Promise(r => setTimeout(r, 2000));
-  return { success: true, button_clicked: clicked || 'keyboard_shortcut', source: 'dom_fallback' };
+  const declinedSave = clicked === 'SKIPPED_SAVE_AND_ADD';
+  return {
+    success: true,
+    button_clicked: declinedSave ? 'none (declined save-and-add)' : (clicked || 'keyboard_shortcut'),
+    source: 'dom_fallback',
+    ...(declinedSave ? { note: 'Declined "Save and add to chart" to avoid overwriting the bound cloud script. Call pine_save to persist intentionally.' } : {}),
+  };
 }
 
 export async function getErrors() {
@@ -348,32 +348,71 @@ export async function save() {
   const editorReady = await ensurePineEditorOpen();
   if (!editorReady) throw new Error('Could not open Pine Editor.');
 
-  const c = await getClient();
-  await c.Input.dispatchKeyEvent({ type: 'keyDown', modifiers: 2, key: 's', code: 'KeyS', windowsVirtualKeyCode: 83 });
-  await c.Input.dispatchKeyEvent({ type: 'keyUp', key: 's', code: 'KeyS' });
-  await new Promise(r => setTimeout(r, 800));
-
-  // Handle "Save Script" name dialog that appears for new/unsaved scripts
-  const dialogHandled = await evaluate(`
+  // Click the Pine Editor's "Save script" button directly and verify the
+  // unsaved→saved state actually flips. The previous implementation dispatched
+  // Ctrl+S (modifiers:2), which is a no-op on macOS where save is Cmd+S, and it
+  // returned success without verifying anything landed (fire-and-forget).
+  const clickResult = await evaluate(`
     (function() {
-      var saveBtn = null;
       var btns = document.querySelectorAll('button');
       for (var i = 0; i < btns.length; i++) {
-        var text = btns[i].textContent.trim();
-        if (text === 'Save' && btns[i].offsetParent !== null) {
-          // Check if it's in a dialog (not the Pine Editor save button)
-          var parent = btns[i].closest('[class*="dialog"], [class*="modal"], [class*="popup"], [role="dialog"]');
-          if (parent) { saveBtn = btns[i]; break; }
+        var b = btns[i];
+        if (b.offsetParent === null) continue;
+        var cls = b.className || '';
+        var title = b.getAttribute('title') || '';
+        if (cls.indexOf('saveButton') !== -1 || /^save script$/i.test(title)) {
+          var wasUnsaved = cls.indexOf('unsaved') !== -1;
+          b.click();
+          return { clicked: true, wasUnsaved: wasUnsaved };
         }
       }
-      if (saveBtn) { saveBtn.click(); return true; }
-      return false;
+      return { clicked: false };
     })()
   `);
 
-  if (dialogHandled) await new Promise(r => setTimeout(r, 500));
+  if (!clickResult || !clickResult.clicked) {
+    // Fallback: platform-correct save shortcut (Cmd+S on macOS = Meta/modifiers:4).
+    const c = await getClient();
+    const mods = process.platform === 'darwin' ? 4 : 2;
+    await c.Input.dispatchKeyEvent({ type: 'keyDown', modifiers: mods, key: 's', code: 'KeyS', windowsVirtualKeyCode: 83 });
+    await c.Input.dispatchKeyEvent({ type: 'keyUp', modifiers: mods, key: 's', code: 'KeyS' });
+  }
+  await new Promise(r => setTimeout(r, 900));
 
-  return { success: true, action: dialogHandled ? 'saved_with_dialog' : 'Ctrl+S_dispatched' };
+  // Handle the "Save Script" name dialog that appears for brand-new scripts.
+  const dialogHandled = await evaluate(`
+    (function() {
+      var btns = document.querySelectorAll('[role="dialog"] button, [class*="dialog"] button, [class*="modal"] button, [class*="popup"] button');
+      for (var i = 0; i < btns.length; i++) {
+        if ((btns[i].textContent || '').trim() === 'Save' && btns[i].offsetParent !== null) { btns[i].click(); return true; }
+      }
+      return false;
+    })()
+  `);
+  if (dialogHandled) await new Promise(r => setTimeout(r, 600));
+
+  // Verify the save landed: the editor's save button should no longer be "unsaved".
+  const verified = await evaluate(`
+    (function() {
+      var btns = document.querySelectorAll('button');
+      for (var i = 0; i < btns.length; i++) {
+        var cls = btns[i].className || '';
+        if (cls.indexOf('saveButton') !== -1 && btns[i].offsetParent !== null) {
+          return { found: true, unsaved: cls.indexOf('unsaved') !== -1 };
+        }
+      }
+      return { found: false };
+    })()
+  `);
+
+  if (verified && verified.found && verified.unsaved) {
+    return { success: false, error: 'Save dispatched but the editor still shows unsaved changes — the save did not land.', verified };
+  }
+  return {
+    success: true,
+    action: dialogHandled ? 'saved_with_dialog' : (clickResult && clickResult.clicked ? 'save_button_clicked' : 'shortcut_dispatched'),
+    verified: verified && verified.found ? 'unsaved_flag_cleared' : 'unverified_no_button',
+  };
 }
 
 export async function getConsole() {
@@ -442,31 +481,31 @@ export async function smartCompile() {
 
   const buttonClicked = await evaluate(`
     (function() {
+      // SAFE compile: only click buttons that ADD the study to the chart WITHOUT
+      // persisting the script to the user's cloud. Never click a "saveButton" or
+      // "Save and add to chart" — those overwrite the editor's bound script and
+      // are exactly what corrupted a real user script before.
       var btns = document.querySelectorAll('button');
-      var addBtn = null;
-      var updateBtn = null;
-      var saveBtn = null;
+      var addBtn = null, updateBtn = null, saveAndAdd = false;
       for (var i = 0; i < btns.length; i++) {
         var text = btns[i].textContent.trim();
-        if (/save and add to chart/i.test(text)) {
-          btns[i].click();
-          return 'Save and add to chart';
-        }
         if (!addBtn && /^add to chart$/i.test(text)) addBtn = btns[i];
         if (!updateBtn && /^update on chart$/i.test(text)) updateBtn = btns[i];
-        if (!saveBtn && btns[i].className.indexOf('saveButton') !== -1 && btns[i].offsetParent !== null) saveBtn = btns[i];
+        if (/save and add to chart/i.test(text)) saveAndAdd = true;
       }
       if (addBtn) { addBtn.click(); return 'Add to chart'; }
       if (updateBtn) { updateBtn.click(); return 'Update on chart'; }
-      if (saveBtn) { saveBtn.click(); return 'Pine Save'; }
-      return null;
+      // Only a save-capable button is available — refuse to auto-save.
+      return saveAndAdd ? 'SKIPPED_SAVE_AND_ADD' : null;
     })()
   `);
 
   if (!buttonClicked) {
+    // Ctrl/Cmd+Enter is the non-persisting "add to chart" shortcut (not a save).
     const c = await getClient();
-    await c.Input.dispatchKeyEvent({ type: 'keyDown', modifiers: 2, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
-    await c.Input.dispatchKeyEvent({ type: 'keyUp', key: 'Enter', code: 'Enter' });
+    const mods = process.platform === 'darwin' ? 4 : 2;
+    await c.Input.dispatchKeyEvent({ type: 'keyDown', modifiers: mods, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await c.Input.dispatchKeyEvent({ type: 'keyUp', modifiers: mods, key: 'Enter', code: 'Enter' });
   }
 
   await new Promise(r => setTimeout(r, 2500));
@@ -494,14 +533,17 @@ export async function smartCompile() {
     })()
   `);
 
-  const studyAdded = (studiesBefore !== null && studiesAfter !== null) ? studiesAfter > studiesBefore : null;
+  const declinedSave = buttonClicked === 'SKIPPED_SAVE_AND_ADD';
+  const studyAdded = declinedSave ? false
+    : (studiesBefore !== null && studiesAfter !== null) ? studiesAfter > studiesBefore : null;
 
   return {
     success: true,
-    button_clicked: buttonClicked || 'keyboard_shortcut',
+    button_clicked: declinedSave ? 'none (declined save-and-add)' : (buttonClicked || 'keyboard_shortcut'),
     has_errors: errors?.length > 0,
     errors: errors || [],
     study_added: studyAdded,
+    ...(declinedSave ? { note: 'Only a "Save and add to chart" button was available; declined it to avoid overwriting the editor\'s bound cloud script. Compile errors (if any) are still reported above. Call pine_save explicitly to persist.' } : {}),
   };
 }
 

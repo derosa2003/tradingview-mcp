@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { jsonResult } from './_format.js';
 import * as core from '../core/ui.js';
+import * as layoutCore from '../core/layout.js';
 
 export function registerUiTools(server) {
   server.tool('ui_click', 'Click a UI element by aria-label, data-name, text content, or class substring', {
@@ -24,15 +25,38 @@ export function registerUiTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
-  server.tool('layout_list', 'List saved chart layouts', {}, async () => {
-    try { return jsonResult(await core.layoutList()); }
+  server.tool('layout_list', 'List saved chart layouts (always reads fresh from TradingView — no MCP-side cache)', {
+    refresh: z.coerce.boolean().optional().describe('Force a backend refresh before reading (default true). Pass false to read the in-memory state for a faster but possibly stale read.'),
+  }, async ({ refresh } = {}) => {
+    try { return jsonResult(await layoutCore.list({ refresh: refresh !== false })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
   server.tool('layout_switch', 'Switch to a saved chart layout by name or ID', {
     name: z.string().describe('Name or ID of the layout to switch to'),
   }, async ({ name }) => {
-    try { return jsonResult(await core.layoutSwitch({ name })); }
+    try { return jsonResult(await layoutCore.load({ name_or_id: name })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
+  server.tool('layout_current', 'Get the currently-loaded layout (id, name, uid)', {}, async () => {
+    try { return jsonResult(await layoutCore.current()); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
+  server.tool('layout_save_as', 'Save the current chart as a NEW saved layout via saveChartSilently — no "Make a copy" dialog. Returns the new layout id. By default the local chart stays on the original layout so subsequent saves go to the original, not the new copy.', {
+    name: z.string().describe('Name for the new layout'),
+    on_conflict: z.enum(['error', 'overwrite']).optional().describe('"error" (default) → fail if a layout with the same name already exists. "overwrite" → delete the existing same-named layout first.'),
+    stay_on_original: z.coerce.boolean().optional().describe('Default true. After save, restore the local chart back to the original layout. Pass false to switch to the new clone (matches TradingView\'s native Save As behavior).'),
+  }, async ({ name, on_conflict, stay_on_original }) => {
+    try { return jsonResult(await layoutCore.saveAs({ name, on_conflict, stay_on_original: stay_on_original !== false })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
+  server.tool('layout_delete', 'Delete a saved layout by name or id. If the deleted layout was the currently-active one, TradingView clears the chart metaInfo (you may want to load_chart after).', {
+    name_or_id: z.string().describe('Name (case-insensitive) or numeric id of the layout to delete'),
+  }, async ({ name_or_id }) => {
+    try { return jsonResult(await layoutCore.remove({ name_or_id })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 

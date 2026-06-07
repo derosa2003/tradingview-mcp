@@ -47,6 +47,42 @@ export function requireFinite(value, name) {
   return n;
 }
 
+/**
+ * Build a JS expression for the chart API at a specific pane index, addressing
+ * the pane directly via `TradingViewApi.chart(N)` so the operation does not
+ * depend on which pane is currently focused/active. Pass undefined/null to fall
+ * back to the active chart (legacy behavior).
+ *
+ * `chart(N)` throws "Incorrect index" if N is out of range; we wrap it to surface
+ * a friendlier error that includes the actual pane count.
+ */
+export function chartApiExpr(pane_index) {
+  if (pane_index === undefined || pane_index === null) {
+    return KNOWN_PATHS.chartApi;
+  }
+  const n = Number(pane_index);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(`pane_index must be a non-negative integer, got: ${pane_index}`);
+  }
+  return `(function(){ try { return window.TradingViewApi.chart(${n}); } catch(e) { throw new Error('pane_index ${n} out of range (chartsCount=' + window.TradingViewApi.chartsCount() + ')'); } })()`;
+}
+
+/**
+ * Build a JS expression for the inner _chartWidget at a specific pane index.
+ * Used by tools that walk `chart._chartWidget.model().model().dataSources()`
+ * (Pine graphics, study values, etc.).
+ */
+export function chartWidgetExpr(pane_index) {
+  return `${chartApiExpr(pane_index)}._chartWidget`;
+}
+
+/**
+ * Build a JS expression for the mainSeries bars at a specific pane index.
+ */
+export function barsExpr(pane_index) {
+  return `${chartApiExpr(pane_index)}._chartWidget.model().mainSeries().bars()`;
+}
+
 export async function getClient() {
   if (client) {
     try {

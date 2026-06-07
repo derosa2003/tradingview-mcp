@@ -14,8 +14,9 @@
   "scripts": {
     "start": "node src/server.js",
     "tv": "node src/cli/index.js",
-    "test": "node --test tests/e2e.test.js tests/pine_analyze.test.js",
+    "test": "node --test tests/e2e.test.js tests/pine_analyze.test.js tests/pane_index.test.js tests/hardening.test.js",
     "test:e2e": "node --test tests/e2e.test.js",
+    "test:hardening": "node --test --test-reporter=spec tests/pane_index.test.js tests/hardening.test.js",
     "test:unit": "node --test tests/pine_analyze.test.js tests/cli.test.js",
     "test:cli": "node --test tests/cli.test.js",
     "test:all": "node --test tests/e2e.test.js tests/pine_analyze.test.js tests/cli.test.js",

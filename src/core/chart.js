@@ -1,7 +1,7 @@
 /**
  * Core chart control logic.
  */
-import { evaluate as _evaluate, evaluateAsync as _evaluateAsync, safeString, requireFinite } from '../connection.js';
+import { evaluate as _evaluate, evaluateAsync as _evaluateAsync, safeString, requireFinite, chartApiExpr } from '../connection.js';
 import { waitForChartReady as _waitForChartReady } from '../wait.js';
 
 const CHART_API = 'window.TradingViewApi._activeChartWidgetWV.value()';
@@ -14,11 +14,12 @@ function _resolve(deps) {
   };
 }
 
-export async function getState({ _deps } = {}) {
+export async function getState({ pane_index, _deps } = {}) {
   const { evaluate } = _resolve(_deps);
+  const expr = chartApiExpr(pane_index);
   const state = await evaluate(`
     (function() {
-      var chart = ${CHART_API};
+      var chart = ${expr};
       var studies = [];
       try {
         var allStudies = chart.getAllStudies();
@@ -34,37 +35,62 @@ export async function getState({ _deps } = {}) {
       };
     })()
   `);
-  return { success: true, ...state };
+  return { success: true, pane_index: pane_index ?? null, ...state };
 }
 
-export async function setSymbol({ symbol, _deps }) {
-  const { evaluateAsync, waitForChartReady } = _resolve(_deps);
+export async function setSymbol({ symbol, pane_index, _deps }) {
+  const { evaluateAsync } = _resolve(_deps);
+  const expr = chartApiExpr(pane_index);
   await evaluateAsync(`
     (function() {
-      var chart = ${CHART_API};
+      var chart = ${expr};
       return new Promise(function(resolve) {
         chart.setSymbol(${safeString(symbol)}, {});
-        setTimeout(resolve, 500);
+        setTimeout(resolve, 200);
       });
     })()
   `);
-  const ready = await waitForChartReady(symbol);
-  return { success: true, symbol, chart_ready: ready };
+  // Use the per-pane dataReady() poll regardless of which pane we hit — it
+  // reads the chart API directly, not the DOM, so it's accurate for any pane.
+  const r = await waitReady({ pane_index, timeout_ms: 8000, _deps });
+  // Honest result: a bogus symbol still "sets" (the field changes) but data never
+  // loads. Reflect that in `success` rather than always returning true.
+  return {
+    success: !!r.ready,
+    symbol,
+    pane_index: pane_index ?? null,
+    chart_ready: r.ready,
+    waited_ms: r.waited_ms ?? null,
+    ...(r.ready ? {} : { error: `Symbol set to "${symbol}" but no data loaded within ${r.timeout_ms || 8000}ms — it may be invalid or data is temporarily unavailable.` }),
+  };
 }
 
-export async function setTimeframe({ timeframe, _deps }) {
-  const { evaluate, waitForChartReady } = _resolve(_deps);
+export async function setTimeframe({ timeframe, pane_index, _deps }) {
+  const { evaluate } = _resolve(_deps);
+  const expr = chartApiExpr(pane_index);
   await evaluate(`
     (function() {
-      var chart = ${CHART_API};
+      var chart = ${expr};
       chart.setResolution(${safeString(timeframe)}, {});
     })()
   `);
-  const ready = await waitForChartReady(null, timeframe);
-  return { success: true, timeframe, chart_ready: ready };
-}
+  const r = await waitReady({ pane_index, timeout_ms: 8000, _deps });
+  // Verify the resolution actually changed — setResolution silently ignores
+  // invalid inputs, so without a read-back a bogus timeframe returns success.
+  const actual = await evaluate(`${chartApiExpr(pane_index)}.resolution()`);
+  const norm = (x) => { const s = String(x ?? '').toUpperCase(); return /^[DWM]$/.test(s) ? '1' + s : s; };
+  const applied = norm(actual) === norm(timeframe);
+  return {
+    success: applied,
+    timeframe,
+    actual_resolution: actual ?? null,
+    pane_index: pane_index ?? null,
+    chart_ready: r.ready,
+    waited_ms: r.waited_ms ?? null,
+    ...(applied ? {} : { error: `Timeframe did not change to "${timeframe}" — chart is still on "${actual}". The value may be invalid (use 1, 5, 15, 60, D, W, M).` }),
+  };}
 
-export async function setType({ chart_type, _deps }) {
+export async function setType({ chart_type, pane_index, _deps }) {
   const { evaluate } = _resolve(_deps);
   const typeMap = {
     'Bars': 0, 'Candles': 1, 'Line': 2, 'Area': 3,
@@ -75,47 +101,216 @@ export async function setType({ chart_type, _deps }) {
   if (isNaN(typeNum) || typeNum < 0 || typeNum > 9 || !Number.isInteger(typeNum)) {
     throw new Error(`Unknown chart type: ${chart_type}. Use a name (Candles, Line, etc.) or number (0-9).`);
   }
+  const expr = chartApiExpr(pane_index);
   await evaluate(`
     (function() {
-      var chart = ${CHART_API};
+      var chart = ${expr};
       chart.setChartType(${typeNum});
     })()
   `);
-  return { success: true, chart_type, type_num: typeNum };
+  return { success: true, chart_type, type_num: typeNum, pane_index: pane_index ?? null };
 }
 
-export async function manageIndicator({ action, indicator, entity_id, inputs: inputsRaw, _deps }) {
-  const { evaluate } = _resolve(_deps);
+export async function manageIndicator({ action, indicator, entity_id, inputs: inputsRaw, pane_index, _deps }) {
+  const { evaluate, evaluateAsync } = _resolve(_deps);
   const inputs = inputsRaw ? (typeof inputsRaw === 'string' ? JSON.parse(inputsRaw) : inputsRaw) : undefined;
+  const expr = chartApiExpr(pane_index);
 
   if (action === 'add') {
     const inputArr = inputs ? Object.entries(inputs).map(([k, v]) => ({ id: k, value: v })) : [];
-    const before = await evaluate(`${CHART_API}.getAllStudies().map(function(s) { return s.id; })`);
+    const before = await evaluate(`${expr}.getAllStudies().map(function(s) { return s.id; })`);
     await evaluate(`
       (function() {
-        var chart = ${CHART_API};
+        var chart = ${expr};
         chart.createStudy(${safeString(indicator)}, false, false, ${JSON.stringify(inputArr)});
       })()
     `);
-    await new Promise(r => setTimeout(r, 1500));
-    const after = await evaluate(`${CHART_API}.getAllStudies().map(function(s) { return s.id; })`);
-    const newIds = (after || []).filter(id => !(before || []).includes(id));
-    return { success: newIds.length > 0, action: 'add', indicator, entity_id: newIds[0] || null, new_study_count: newIds.length };
+
+    // Wait for the new study to land, then verify compilation. Poll up to 3s.
+    let newId = null;
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 200));
+      const after = await evaluate(`${expr}.getAllStudies().map(function(s) { return s.id; })`);
+      const newIds = (after || []).filter(id => !(before || []).includes(id));
+      if (newIds.length > 0) { newId = newIds[newIds.length - 1]; break; }
+    }
+    if (!newId) {
+      return { success: false, action: 'add', indicator, error: 'Study did not appear after createStudy. The indicator name may be wrong, or it failed to compile.', pane_index: pane_index ?? null };
+    }
+
+    // Check compilation status — Pine compile errors show a ⚠ on the study and
+    // `hasError`/`isPine`/`hasCompileError` flags reflect that.
+    const status = await evaluate(`
+      (function(){
+        var chart = ${expr};
+        var failed = chart.compileFailedStudies();
+        var thisFailed = false;
+        try {
+          for (var i = 0; i < failed.length; i++) {
+            if (failed[i].id() === ${safeString(newId)} || failed[i].id === ${safeString(newId)}) { thisFailed = true; break; }
+          }
+        } catch(e) {}
+        var study;
+        try { study = chart.getStudyById(${safeString(newId)}); } catch(e) { study = null; }
+        var hasErr = false;
+        try { if (study && typeof study.hasError === 'function') hasErr = !!study.hasError(); } catch(e) {}
+        return { compile_failed: thisFailed, has_error: hasErr };
+      })()
+    `);
+
+    if (status.compile_failed || status.has_error) {
+      // Auto-recover: try removing the bad study and re-adding without input overrides.
+      // Bad input JSON is the most common cause of a silent compile failure.
+      let retryId = null;
+      if (inputArr.length > 0) {
+        try {
+          await evaluate(`${expr}.removeEntity(${safeString(newId)})`);
+          await new Promise(r => setTimeout(r, 300));
+          const before2 = await evaluate(`${expr}.getAllStudies().map(function(s) { return s.id; })`);
+          await evaluate(`${expr}.createStudy(${safeString(indicator)}, false, false, [])`);
+          await new Promise(r => setTimeout(r, 1200));
+          const after2 = await evaluate(`${expr}.getAllStudies().map(function(s) { return s.id; })`);
+          const newIds2 = (after2 || []).filter(id => !(before2 || []).includes(id));
+          retryId = newIds2[newIds2.length - 1] || null;
+          if (retryId) {
+            // Try to set inputs via setInputs (which goes through study.setInputValues — different path than createStudy)
+            const inputsJson = JSON.stringify(inputs);
+            await evaluate(`
+              (function(){
+                var st = ${expr}.getStudyById(${safeString(retryId)});
+                if (!st) return;
+                var cur = st.getInputValues();
+                var ovr = ${inputsJson};
+                for (var i = 0; i < cur.length; i++) {
+                  if (Object.prototype.hasOwnProperty.call(ovr, cur[i].id)) cur[i].value = ovr[cur[i].id];
+                }
+                st.setInputValues(cur);
+              })()
+            `);
+            await new Promise(r => setTimeout(r, 500));
+            // Re-check compilation
+            const status2 = await evaluate(`
+              (function(){
+                var chart = ${expr};
+                var failed = chart.compileFailedStudies();
+                var thisFailed = false;
+                try { for (var i = 0; i < failed.length; i++) { var fid = (typeof failed[i].id === 'function') ? failed[i].id() : failed[i].id; if (fid === ${safeString(retryId)}) { thisFailed = true; break; } } } catch(e) {}
+                return { compile_failed: thisFailed };
+              })()
+            `);
+            if (!status2.compile_failed) {
+              return { success: true, action: 'add', indicator, entity_id: retryId, compilation_status: 'ok', pane_index: pane_index ?? null, recovered: true, note: 'Initial add failed compile; recovered by adding without inputs then setting inputs via setInputs.' };
+            }
+            // Still failed — remove and report
+            try { await evaluate(`${expr}.removeEntity(${safeString(retryId)})`); } catch {}
+          }
+        } catch (e) {
+          // fall through to error report
+        }
+      } else {
+        // No inputs to blame — remove the broken study and report
+        try { await evaluate(`${expr}.removeEntity(${safeString(newId)})`); } catch {}
+      }
+      return {
+        success: false,
+        action: 'add',
+        indicator,
+        error: 'compilation_failed',
+        details: 'Study attached but failed to compile (⚠ on chart). Removed automatically.',
+        pane_index: pane_index ?? null,
+      };
+    }
+
+    return { success: true, action: 'add', indicator, entity_id: newId, new_study_count: 1, compilation_status: 'ok', pane_index: pane_index ?? null };
   } else if (action === 'remove') {
     if (!entity_id) throw new Error('entity_id required for remove action. Use chart_get_state to find study IDs.');
+
+    // Idempotent: if the study isn't in any pane, return success with already_removed=true.
+    const findResult = (await evaluate(`
+      (function(){
+        ${pane_index === undefined || pane_index === null
+          ? `var n = window.TradingViewApi.chartsCount();
+             for (var i = 0; i < n; i++) {
+               try { var s = window.TradingViewApi.chart(i).getStudyById(${safeString(entity_id)}); if (s) return { found: true, pane_index: i }; } catch(e) {}
+             }
+             return { found: false };`
+          : `var s = null;
+             try { s = ${expr}.getStudyById(${safeString(entity_id)}); } catch(e) {}
+             return s ? { found: true, pane_index: ${Number(pane_index)} } : { found: false };`}
+      })()
+    `)) || { found: false };
+
+    if (!findResult.found) {
+      return { success: true, action: 'remove', entity_id, already_removed: true, pane_index: pane_index ?? null };
+    }
+
+    const removeExpr = chartApiExpr(findResult.pane_index);
     await evaluate(`
       (function() {
-        var chart = ${CHART_API};
+        var chart = ${removeExpr};
         chart.removeEntity(${safeString(entity_id)});
       })()
     `);
-    return { success: true, action: 'remove', entity_id };
+
+    // Verify removal — read back from all panes
+    const stillThere = await evaluate(`
+      (function(){
+        var n = window.TradingViewApi.chartsCount();
+        for (var i = 0; i < n; i++) {
+          try { if (window.TradingViewApi.chart(i).getStudyById(${safeString(entity_id)})) return true; } catch(e) {}
+        }
+        return false;
+      })()
+    `);
+
+    if (stillThere) {
+      return { success: false, action: 'remove', entity_id, error: 'remove_failed', details: 'Study still present after removeEntity', pane_index: findResult.pane_index };
+    }
+
+    return { success: true, action: 'remove', entity_id, pane_index: findResult.pane_index };
   } else {
     throw new Error('action must be "add" or "remove"');
   }
 }
 
-export async function getVisibleRange() {
+/**
+ * Wait for the chart at pane_index to finish loading data after a symbol /
+ * resolution change. Resolves when mainSeries data is non-empty or the
+ * timeout elapses. Surfaces a `ready` boolean.
+ */
+export async function waitReady({ pane_index, timeout_ms = 8000, _deps } = {}) {
+  const { evaluate } = _resolve(_deps);
+  const expr = chartApiExpr(pane_index);
+  const start = Date.now();
+  let lastSym = null, lastRes = null;
+  while (Date.now() - start < timeout_ms) {
+    const raw = await evaluate(`
+      (function(){
+        var c = ${expr};
+        var ready = false;
+        try { ready = c.dataReady(); } catch(e) {}
+        var sym = null, res = null;
+        try { sym = c.symbol(); res = c.resolution(); } catch(e) {}
+        return { ready: !!ready, symbol: sym, resolution: res };
+      })()
+    `);
+    // If evaluate isn't returning anything (mock context or chart API not yet up),
+    // don't spin the full timeout — bail with ready:false so callers can proceed.
+    if (raw === undefined || raw === null) {
+      return { success: false, ready: false, pane_index: pane_index ?? null, symbol: null, resolution: null, waited_ms: Date.now() - start, note: 'evaluate returned no value' };
+    }
+    lastSym = raw.symbol; lastRes = raw.resolution;
+    if (raw.ready) {
+      return { success: true, ready: true, pane_index: pane_index ?? null, symbol: lastSym, resolution: lastRes, waited_ms: Date.now() - start };
+    }
+    await new Promise(r => setTimeout(r, 100));
+  }
+  return { success: false, ready: false, pane_index: pane_index ?? null, symbol: lastSym, resolution: lastRes, timeout_ms, error: 'dataReady never became true within timeout' };
+}
+
+export async function getVisibleRange({ _deps } = {}) {
+  const { evaluate } = _resolve(_deps);
   const result = await evaluate(`
     (function() {
       var chart = ${CHART_API};
@@ -157,7 +352,8 @@ export async function setVisibleRange({ from, to, _deps }) {
   return { success: true, requested: { from, to }, actual: actual || { from: 0, to: 0 } };
 }
 
-export async function scrollToDate({ date }) {
+export async function scrollToDate({ date, _deps }) {
+  const { evaluate } = _resolve(_deps);
   let timestamp;
   if (/^\d+$/.test(date)) timestamp = Number(date);
   else timestamp = Math.floor(new Date(date).getTime() / 1000);
@@ -196,7 +392,8 @@ export async function scrollToDate({ date }) {
   return { success: true, date, centered_on: timestamp, resolution, window: { from, to } };
 }
 
-export async function symbolInfo() {
+export async function symbolInfo({ _deps } = {}) {
+  const { evaluate } = _resolve(_deps);
   const result = await evaluate(`
     (function() {
       var chart = ${CHART_API};

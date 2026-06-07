@@ -13,8 +13,11 @@ register('tab', {
       handler: () => core.newTab(),
     }],
     ['close', {
-      description: 'Close the current tab',
-      handler: () => core.closeTab(),
+      description: 'Close a tab by index (from `tv tab list`)',
+      handler: (opts, positionals) => {
+        if (positionals[0] === undefined) throw new Error('Index required. Usage: tv tab close 0');
+        return core.closeTab({ index: positionals[0] });
+      },
     }],
     ['switch', {
       description: 'Switch to a tab by index',

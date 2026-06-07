@@ -19,6 +19,16 @@ export async function batchRun({ symbols, timeframes, action, delay_ms, ohlcv_co
   try { colPath = await getChartCollection(); } catch {}
   try { apiPath = await getChartApi(); } catch {}
 
+  // Snapshot the user's current symbol/timeframe so we can restore it — batch
+  // must not abandon the chart on whatever symbol it iterated to last.
+  let origSymbol = null, origRes = null;
+  if (apiPath) {
+    try {
+      const snap = await evaluate(`(function(){ var c = ${apiPath}; return { s: c.symbol(), r: c.resolution() }; })()`);
+      if (snap) { origSymbol = snap.s; origRes = snap.r; }
+    } catch {}
+  }
+
   for (const symbol of symbols) {
     for (const tf of tfs) {
       const combo = { symbol, timeframe: tf };
@@ -81,6 +91,21 @@ export async function batchRun({ symbols, timeframes, action, delay_ms, ohlcv_co
     }
   }
 
+  // Restore the user's original symbol/timeframe.
+  let restored = false;
+  if (origSymbol && (colPath || apiPath)) {
+    try {
+      if (colPath) await evaluate(`${colPath}.setSymbol(${safeString(origSymbol)})`);
+      else await evaluate(`${apiPath}.setSymbol(${safeString(origSymbol)})`);
+      if (origRes) {
+        if (colPath) await evaluate(`${colPath}.setResolution(${safeString(origRes)})`);
+        else await evaluate(`${apiPath}.setResolution(${safeString(origRes)})`);
+      }
+      await waitForChartReady(origSymbol);
+      restored = true;
+    } catch {}
+  }
+
   const successCount = results.filter(r => r.success).length;
-  return { success: true, total_iterations: results.length, successful: successCount, failed: results.length - successCount, results };
+  return { success: true, total_iterations: results.length, successful: successCount, failed: results.length - successCount, restored_to: restored ? origSymbol : null, results };
 }

@@ -14,6 +14,7 @@ import { registerWatchlistTools } from './tools/watchlist.js';
 import { registerUiTools } from './tools/ui.js';
 import { registerPaneTools } from './tools/pane.js';
 import { registerTabTools } from './tools/tab.js';
+import { registerTemplateTools } from './tools/templates.js';
 
 const server = new McpServer(
   {
@@ -22,7 +23,7 @@ const server = new McpServer(
     description: 'AI-assisted TradingView chart analysis and Pine Script development via Chrome DevTools Protocol',
   },
   {
-    instructions: `TradingView MCP — 78 tools for reading and controlling a live TradingView Desktop chart.
+    instructions: `TradingView MCP — 90+ tools for reading and controlling a live TradingView Desktop chart.
 
 TOOL SELECTION GUIDE — use this to pick the right tool:
 
@@ -60,6 +61,13 @@ Launch: tv_launch → auto-detect and start TradingView with CDP on any platform
 Panes: pane_list, pane_set_layout (s, 2h, 2v, 4, 6, 8), pane_focus, pane_set_symbol
 Tabs: tab_list, tab_new, tab_close, tab_switch
 
+Multi-pane: every chart_/data_/indicator_ tool takes optional pane_index (0-based). Omit to target the active pane.
+Saved layouts: layout_list, layout_current, layout_switch, layout_save_as (silent, no dialog), layout_delete. layout_list always reads fresh.
+Watchlists: watchlist_list, watchlist_get, watchlist_create, watchlist_delete, watchlist_set_active, watchlist_rename, watchlist_add/_batch/_section, watchlist_remove — all via TV's REST API, no sidebar UI needed.
+Indicator templates: indicator_template_list, indicator_template_apply (silent), indicator_template_save, indicator_template_delete.
+Sync: chart_wait_ready (block until dataReady) — chart_set_symbol / _timeframe already wait internally.
+Indicator adds verify compilation — adds that produce a ⚠ are auto-removed and surfaced as success:false. Removals are idempotent across all panes.
+
 CONTEXT MANAGEMENT:
 - ALWAYS use summary=true on data_get_ohlcv
 - ALWAYS use study_filter on pine tools when you know which indicator you want
@@ -84,6 +92,7 @@ registerWatchlistTools(server);
 registerUiTools(server);
 registerPaneTools(server);
 registerTabTools(server);
+registerTemplateTools(server);
 
 // Startup notice (stderr so it doesn't interfere with MCP stdio protocol)
 process.stderr.write('⚠  tradingview-mcp  |  Unofficial tool. Not affiliated with TradingView Inc. or Anthropic.\n');

@@ -84,6 +84,29 @@ export async function openPanel({ panel, action }) {
       })()
     `);
     if (result && result.error) throw new Error(result.error);
+
+    if (result?.performed === 'opened' || result?.performed === 'closed') {
+      await new Promise(r => setTimeout(r, 400));
+      const sidebarOpen = await evaluate(`
+        (function() {
+          var rightArea = document.querySelector('[class*="layout__area--right"]');
+          return !!(rightArea && rightArea.offsetWidth > 50);
+        })()
+      `);
+      const intendedOpen = action === 'open' || (action === 'toggle' && !result.was_open);
+      if (intendedOpen !== !!sidebarOpen) {
+        return {
+          success: false,
+          panel,
+          action,
+          was_open: result.was_open,
+          performed: result.performed,
+          observed_open: !!sidebarOpen,
+          error: `Panel state did not match intent after click (intended ${intendedOpen ? 'open' : 'closed'}, observed ${sidebarOpen ? 'open' : 'closed'}).`,
+        };
+      }
+    }
+
     return { success: true, panel, action, was_open: result?.was_open ?? false, performed: result?.performed ?? 'unknown' };
   }
 }

@@ -39,27 +39,15 @@ export async function list() {
       var count = cwc.inlineChartsCount;
       if (typeof count === 'object' && count && typeof count.value === 'function') count = count.value();
 
-      var all = cwc.getAll();
+      var n = window.TradingViewApi.chartsCount();
       var panes = [];
-      for (var i = 0; i < all.length; i++) {
+      for (var i = 0; i < n; i++) {
         try {
-          var c = all[i];
-          var model = c.model ? c.model() : null;
-          var mainSeries = model ? model.mainSeries() : null;
-          var sym = mainSeries ? mainSeries.symbol() : 'unknown';
-          var res = mainSeries ? mainSeries.interval() : null;
-          panes.push({ index: i, symbol: sym, resolution: res || null });
+          var api = window.TradingViewApi.chart(i);
+          panes.push({ index: i, symbol: api.symbol(), resolution: api.resolution() });
         } catch(e) { panes.push({ index: i, error: e.message }); }
       }
-
-      // Check which pane is active
-      var activeChart = window.TradingViewApi._activeChartWidgetWV.value();
-      var activeIndex = null;
-      for (var j = 0; j < all.length; j++) {
-        try {
-          if (all[j].model && activeChart._chartWidget && all[j] === activeChart._chartWidget) { activeIndex = j; break; }
-        } catch(e) {}
-      }
+      var activeIndex = window.TradingViewApi.activeChartIndex();
 
       return { layout: layoutType, chart_count: count, active_index: activeIndex, panes: panes };
     })()
@@ -96,55 +84,67 @@ export async function setLayout({ layout }) {
     throw new Error(`Unknown layout "${layout}". Available layouts:\n${available}`);
   }
 
+  const beforeCount = (await list()).chart_count;
   await evaluateAsync(`${CWC}.setLayout(${safeString(resolved)})`);
   await new Promise(r => setTimeout(r, 500));
 
   const state = await list();
+  const shrank = typeof beforeCount === 'number' && state.chart_count < beforeCount;
   return {
     success: true,
     layout: resolved,
     layout_name: LAYOUT_NAMES[resolved],
     chart_count: state.chart_count,
     panes: state.panes,
+    ...(shrank ? { warning: `Layout shrank from ${beforeCount} to ${state.chart_count} panes — TradingView dropped the extra panes (their symbols/studies are gone from this layout). Save a layout first if you need them back.` } : {}),
   };
 }
 
 /**
  * Focus a specific pane by index.
+ *
+ * Uses `TradingViewApi.setActiveChart(N)` (an internal API call) instead of a
+ * DOM click on the pane's main div, so focus is set deterministically without
+ * depending on layout/visibility. Polls `activeChartIndex()` to confirm.
  */
 export async function focus({ index }) {
-  const idx = Number(index);
+  const idx = Math.floor(Number(index));
+  if (!Number.isInteger(idx) || idx < 0) throw new Error(`index must be a non-negative integer, got: ${index}`);
+
   const result = await evaluate(`
     (function() {
-      var cwc = ${CWC};
-      var all = cwc.getAll();
-      if (${idx} >= all.length) return { error: 'Pane index ' + ${idx} + ' out of range (have ' + all.length + ' panes)' };
-      var chart = all[${idx}];
-      // Click the main div to activate it
-      if (chart._mainDiv) chart._mainDiv.click();
-      return { focused: ${idx}, total: all.length };
+      var n = window.TradingViewApi.chartsCount();
+      if (${idx} >= n) return { error: 'Pane index ' + ${idx} + ' out of range (have ' + n + ' panes)' };
+      window.TradingViewApi.setActiveChart(${idx});
+      return { focused: ${idx}, total: n };
     })()
   `);
-
   if (result?.error) throw new Error(result.error);
-  return { success: true, focused_index: result.focused, total_panes: result.total };
+
+  // Poll for active index to settle (the WatchedValue may update on the next tick)
+  let settledIdx = -1;
+  for (let i = 0; i < 20; i++) {
+    settledIdx = await evaluate('window.TradingViewApi.activeChartIndex()');
+    if (settledIdx === idx) break;
+    await new Promise(r => setTimeout(r, 50));
+  }
+
+  return { success: true, focused_index: result.focused, total_panes: result.total, settled: settledIdx === idx };
 }
 
 /**
- * Set the symbol on a specific pane by index.
- * Works by focusing the pane, then using the active chart's setSymbol.
+ * Set the symbol on a specific pane by index. Targets the pane directly via
+ * `TradingViewApi.chart(N)` rather than relying on focus state.
  */
 export async function setSymbol({ index, symbol }) {
-  const idx = Number(index);
+  const idx = Math.floor(Number(index));
+  if (!Number.isInteger(idx) || idx < 0) throw new Error(`index must be a non-negative integer, got: ${index}`);
 
-  // Focus the target pane first
-  await focus({ index: idx });
-  await new Promise(r => setTimeout(r, 300));
-
-  // Now set symbol on the now-active chart
   await evaluateAsync(`
     (function() {
-      var chart = window.TradingViewApi._activeChartWidgetWV.value();
+      var n = window.TradingViewApi.chartsCount();
+      if (${idx} >= n) throw new Error('Pane index ${idx} out of range (have ' + n + ' panes)');
+      var chart = window.TradingViewApi.chart(${idx});
       return new Promise(function(resolve) {
         chart.setSymbol(${safeString(symbol)}, {});
         setTimeout(resolve, 500);
@@ -152,5 +152,16 @@ export async function setSymbol({ index, symbol }) {
     })()
   `);
 
-  return { success: true, index: idx, symbol };
+  // Read back to verify the symbol actually applied — previously fire-and-sleep
+  // that returned success:true without confirming anything.
+  const actual = await evaluate(`(function(){ try { return window.TradingViewApi.chart(${idx}).symbol(); } catch(e) { return null; } })()`);
+  const norm = (x) => { const s = String(x ?? '').toUpperCase(); const i = s.indexOf(':'); return i >= 0 ? s.slice(i + 1) : s; };
+  const applied = !!actual && norm(actual) === norm(symbol);
+  return {
+    success: applied,
+    index: idx,
+    symbol,
+    actual_symbol: actual ?? null,
+    ...(applied ? {} : { error: `Pane ${idx} symbol read back as "${actual}", not "${symbol}" — it may be invalid or still loading.` }),
+  };
 }
