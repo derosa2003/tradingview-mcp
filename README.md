@@ -72,7 +72,7 @@ Gives your AI assistant eyes and hands on your own chart:
 
 Paste this into Claude Code and it will handle the rest:
 
-> Install the TradingView MCP server. Clone https://github.com/tradesdontlie/tradingview-mcp.git, run npm install, add it to my MCP config at ~/.claude/.mcp.json, and launch TradingView with the debug port. Then verify the connection with tv_health_check.
+> Install the TradingView MCP server. Clone https://github.com/derosa2003/tradingview-mcp.git, run npm install, add it to my MCP config at ~/.claude/.mcp.json, and launch TradingView with the debug port. Then verify the connection with tv_health_check.
 
 Or follow the manual steps below.
 
@@ -81,7 +81,7 @@ Or follow the manual steps below.
 ### 1. Install
 
 ```bash
-git clone https://github.com/tradesdontlie/tradingview-mcp.git
+git clone https://github.com/derosa2003/tradingview-mcp.git
 cd tradingview-mcp
 npm install
 ```
@@ -215,7 +215,7 @@ Claude reads [`CLAUDE.md`](CLAUDE.md) automatically when working in this project
 | "Draw a level at 24500" | `draw_shape` (horizontal_line) |
 | "Take a screenshot" | `capture_screenshot` |
 
-## Tool Reference (78 MCP tools)
+## Tool Reference (95 MCP tools)
 
 ### Chart Reading
 
@@ -339,11 +339,15 @@ The key flag: `--remote-debugging-port=9222`
 ## Testing
 
 ```bash
-# Requires TradingView running with --remote-debugging-port=9222
+# Full suite — the e2e portion drives a live chart, so it needs
+# TradingView running with --remote-debugging-port=9222
 npm test
+
+# Offline tests only — no TradingView required
+npm run test:unit
 ```
 
-29 tests covering: Pine Script static analysis, server-side compilation, and CLI routing.
+`npm test` runs the e2e, Pine analysis, pane-index, and hardening suites; the e2e tests interact with a live chart, so they need TradingView running on port 9222. `npm run test:unit` runs 29 offline tests (Pine static analysis + CLI routing) with no chart required — the right command if you just want to confirm the install works.
 
 ## Architecture
 
@@ -351,10 +355,23 @@ npm test
 Claude Code  ←→  MCP Server (stdio)  ←→  CDP (port 9222)  ←→  TradingView Desktop (Electron)
 ```
 
-- **Transport**: MCP over stdio (78 tools) + CLI (`tv` command, 30 commands with 66 subcommands)
+- **Transport**: MCP over stdio (95 tools) + CLI (`tv` command, pipe-friendly with JSON output)
 - **Connection**: Chrome DevTools Protocol on localhost:9222
 - **Streaming**: Poll-and-diff loop with deduplication, JSONL output to stdout
 - **No dependencies** beyond `@modelcontextprotocol/sdk` and `chrome-remote-interface`
+
+## Known Limitations
+
+These are validated flaws in the current build that have **not** been fixed yet. They're surfaced honestly at runtime (the affected tools return `success: false` rather than faking success), but you should know about them before relying on them:
+
+- **No `pine_delete` tool.** Scripts saved with `pine_save` persist in your TradingView cloud account and must be deleted manually (Pine Editor → Open → right-click → Delete). Prefix throwaway script names so they're easy to find later.
+- **`alert_delete` is delete-all-only.** The schema exposes `delete_all` but no per-alert id, so you can't delete a single alert without wiping every alert on the account. A per-alert delete is proposed in `NEXT_STEPS.md`.
+- **`alert_create` depends on DOM selectors that drift between TradingView versions.** On TradingView Desktop 3.1.0 the alert-dialog selectors didn't match, so price-setting failed (returns `price_set: false`, `source: "dom_fallback"` — an honest failure, not a silent one). May or may not work on your build.
+- **`ui_open_panel` can't always close the Pine editor.** On builds where `bottomWidgetBar.hideWidget` is missing (e.g. TVDesktop 3.1.0), the close path is a guarded no-op — opening works, closing silently does nothing.
+- **UI-automation tools are version-fragile in general.** Anything that drives the TradingView UI by DOM selector (panel toggles, some alert/UI actions) was validated against TradingView Desktop 3.1.0 and can break on other builds. The data-layer tools — REST-based watchlists, chart-API reads, Pine `analyze`/`check` — are far more stable.
+- **`pine_get_errors` doesn't separate warnings from errors.** Monaco severity 4 (warning) and 8 (error) both land in the `errors` list. Use `pine_check` if you need a clean warning/error split.
+
+See [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) for the full validation log. Note it predates the hardening pass, so some issues recorded there — `tab_new` silent success, the `drawing.js` `getChartApi` bug, and `watchlist_add` selector rot — are **already fixed** in the current code.
 
 ## Attributions
 
